@@ -1,4 +1,5 @@
-import { Api, Bot } from 'grammy';
+import { Bot } from 'grammy';
+import telegramifyMarkdown from 'telegramify-markdown';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -15,29 +16,6 @@ export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
-}
-
-/**
- * Send a message with Telegram Markdown parse mode, falling back to plain text.
- * Claude's output naturally matches Telegram's Markdown v1 format:
- *   *bold*, _italic_, `code`, ```code blocks```, [links](url)
- */
-async function sendTelegramMessage(
-  api: { sendMessage: Api['sendMessage'] },
-  chatId: string | number,
-  text: string,
-  options: { message_thread_id?: number } = {},
-): Promise<void> {
-  try {
-    await api.sendMessage(chatId, text, {
-      ...options,
-      parse_mode: 'Markdown',
-    });
-  } catch (err) {
-    // Fallback: send as plain text if Markdown parsing fails
-    logger.debug({ err }, 'Markdown send failed, falling back to plain text');
-    await api.sendMessage(chatId, text, options);
-  }
 }
 
 export class TelegramChannel implements Channel {
@@ -65,8 +43,8 @@ export class TelegramChannel implements Channel {
           : (ctx.chat as any).title || 'Unknown';
 
       ctx.reply(
-        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
-        { parse_mode: 'Markdown' },
+        `Chat ID: <code>tg:${chatId}</code>\nName: ${chatName}\nType: ${chatType}`,
+        { parse_mode: 'HTML' },
       );
     });
 
@@ -214,6 +192,25 @@ export class TelegramChannel implements Channel {
     });
   }
 
+  /**
+   * Convert a raw text chunk to MarkdownV2 and send it, falling back to
+   * plain text if Telegram rejects the formatted message.
+   */
+  private async sendChunk(chatId: string, chunk: string): Promise<void> {
+    try {
+      const formatted = telegramifyMarkdown(chunk, 'escape');
+      await this.bot!.api.sendMessage(chatId, formatted, {
+        parse_mode: 'MarkdownV2',
+      });
+    } catch {
+      logger.debug(
+        { chatId },
+        'MarkdownV2 send failed, falling back to plain text',
+      );
+      await this.bot!.api.sendMessage(chatId, chunk);
+    }
+  }
+
   async sendMessage(jid: string, text: string): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
@@ -223,17 +220,14 @@ export class TelegramChannel implements Channel {
     try {
       const numericId = jid.replace(/^tg:/, '');
 
-      // Telegram has a 4096 character limit per message — split if needed
+      // Split raw text first, then convert each chunk independently.
+      // This avoids breaking MarkdownV2 escape sequences mid-message.
       const MAX_LENGTH = 4096;
       if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text);
+        await this.sendChunk(numericId, text);
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await sendTelegramMessage(
-            this.bot.api,
-            numericId,
-            text.slice(i, i + MAX_LENGTH),
-          );
+          await this.sendChunk(numericId, text.slice(i, i + MAX_LENGTH));
         }
       }
       logger.info({ jid, length: text.length }, 'Telegram message sent');
