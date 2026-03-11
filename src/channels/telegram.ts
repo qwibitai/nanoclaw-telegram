@@ -18,6 +18,26 @@ export interface TelegramChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+/**
+ * Strip markdown syntax for clean plain-text fallback.
+ * Preserves all content — only removes formatting markers.
+ */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, '')          // headings
+    .replace(/\*\*(.+?)\*\*/g, '$1')      // **bold**
+    .replace(/__(.+?)__/g, '$1')           // __bold__
+    .replace(/\*(.+?)\*/g, '$1')           // *italic*
+    .replace(/_(.+?)_/g, '$1')             // _italic_
+    .replace(/~~(.+?)~~/g, '$1')           // ~~strike~~
+    .replace(/`{3}[\s\S]*?`{3}/g, (m) =>  // ```code blocks``` — keep content
+      m.replace(/^`{3}\w*\n?/, '').replace(/\n?`{3}$/, ''))
+    .replace(/`(.+?)`/g, '$1')            // `inline code`
+    .replace(/^\s*---+\s*$/gm, '')         // horizontal rules
+    .replace(/^>\s?/gm, '')                // > blockquotes
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
+}
+
 export class TelegramChannel implements Channel {
   name = 'telegram';
 
@@ -95,8 +115,15 @@ export class TelegramChannel implements Channel {
       }
 
       // Store chat metadata for discovery
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, chatName, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'telegram',
+        isGroup,
+      );
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
@@ -139,8 +166,15 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
 
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -154,9 +188,7 @@ export class TelegramChannel implements Channel {
 
     this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) =>
-      storeNonText(ctx, '[Voice message]'),
-    );
+    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
@@ -194,7 +226,7 @@ export class TelegramChannel implements Channel {
 
   /**
    * Convert a raw text chunk to MarkdownV2 and send it, falling back to
-   * plain text if Telegram rejects the formatted message.
+   * clean plain text if Telegram rejects the formatted message.
    */
   private async sendChunk(chatId: string, chunk: string): Promise<void> {
     try {
@@ -203,11 +235,13 @@ export class TelegramChannel implements Channel {
         parse_mode: 'MarkdownV2',
       });
     } catch {
+      // MarkdownV2 failed (e.g. library bug with tables/blockquotes).
+      // Fall back to clean plain text with markdown syntax stripped.
       logger.debug(
         { chatId },
         'MarkdownV2 send failed, falling back to plain text',
       );
-      await this.bot!.api.sendMessage(chatId, chunk);
+      await this.bot!.api.sendMessage(chatId, stripMarkdown(chunk));
     }
   }
 

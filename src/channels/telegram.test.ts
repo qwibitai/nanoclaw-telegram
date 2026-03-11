@@ -74,7 +74,11 @@ vi.mock('grammy', () => ({
   },
 }));
 
-import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
+import {
+  TelegramChannel,
+  TelegramChannelOpts,
+  stripMarkdown,
+} from './telegram.js';
 
 // --- Test helpers ---
 
@@ -733,29 +737,29 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('falls back to plain text when MarkdownV2 send fails', async () => {
+    it('falls back to stripped plain text when MarkdownV2 send fails', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
       currentBot().api.sendMessage.mockRejectedValueOnce(
-        new Error('Bad Request: can\'t parse entities'),
+        new Error("Bad Request: can't parse entities"),
       );
 
-      await channel.sendMessage('tg:100200300', 'Hello *world');
+      await channel.sendMessage('tg:100200300', 'Hello **bold**');
 
-      // First call: MarkdownV2 attempt, second call: plain text fallback
+      // First call: MarkdownV2 attempt, second call: stripped plain text
       expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         1,
         '100200300',
-        'Hello *world',
+        'Hello **bold**',
         { parse_mode: 'MarkdownV2' },
       );
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         2,
         '100200300',
-        'Hello *world',
+        'Hello bold',
       );
     });
 
@@ -799,8 +803,8 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       // Both MarkdownV2 and plain-text fallback fail
-      currentBot().api.sendMessage
-        .mockRejectedValueOnce(new Error('Network error'))
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce(new Error('Network error'))
         .mockRejectedValueOnce(new Error('Network error'));
 
       // Should not throw — outer try/catch handles it
