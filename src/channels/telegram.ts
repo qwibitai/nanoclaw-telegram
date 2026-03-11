@@ -24,17 +24,21 @@ export interface TelegramChannelOpts {
  */
 export function stripMarkdown(text: string): string {
   return text
-    .replace(/^#{1,6}\s+/gm, '')          // headings
-    .replace(/\*\*(.+?)\*\*/g, '$1')      // **bold**
-    .replace(/__(.+?)__/g, '$1')           // __bold__
-    .replace(/\*(.+?)\*/g, '$1')           // *italic*
-    .replace(/_(.+?)_/g, '$1')             // _italic_
-    .replace(/~~(.+?)~~/g, '$1')           // ~~strike~~
-    .replace(/`{3}[\s\S]*?`{3}/g, (m) =>  // ```code blocks``` — keep content
-      m.replace(/^`{3}\w*\n?/, '').replace(/\n?`{3}$/, ''))
-    .replace(/`(.+?)`/g, '$1')            // `inline code`
-    .replace(/^\s*---+\s*$/gm, '')         // horizontal rules
-    .replace(/^>\s?/gm, '')                // > blockquotes
+    .replace(/^#{1,6}\s+/gm, '') // headings
+    .replace(/\*\*(.+?)\*\*/g, '$1') // **bold**
+    .replace(/__(.+?)__/g, '$1') // __bold__
+    .replace(/\*(.+?)\*/g, '$1') // *italic*
+    .replace(/_(.+?)_/g, '$1') // _italic_
+    .replace(/~~(.+?)~~/g, '$1') // ~~strike~~
+    .replace(
+      /`{3}[\s\S]*?`{3}/g,
+      (
+        m, // ```code blocks``` — keep content
+      ) => m.replace(/^`{3}\w*\n?/, '').replace(/\n?`{3}$/, ''),
+    )
+    .replace(/`(.+?)`/g, '$1') // `inline code`
+    .replace(/^\s*---+\s*$/gm, '') // horizontal rules
+    .replace(/^>\s?/gm, '') // > blockquotes
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
 }
 
