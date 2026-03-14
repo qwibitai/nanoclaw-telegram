@@ -1,4 +1,6 @@
 import https from 'https';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
@@ -199,7 +201,71 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    // Download a Telegram photo and save it to the group's media directory.
+    // Returns the container-accessible path on success, or null on failure.
+    const downloadPhoto = async (
+      ctx: any,
+      group: RegisteredGroup,
+    ): Promise<string | null> => {
+      try {
+        const photos = ctx.message.photo;
+        if (!photos || photos.length === 0) return null;
+
+        // Use the highest-resolution photo (last in array)
+        const largestPhoto = photos[photos.length - 1];
+        const file = await ctx.api.getFile(largestPhoto.file_id);
+        if (!file.file_path) return null;
+
+        // Construct Telegram file download URL
+        const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+        const response = await fetch(downloadUrl);
+        if (!response.ok) {
+          logger.warn(
+            { status: response.status },
+            'Failed to fetch photo from Telegram',
+          );
+          return null;
+        }
+
+        const buffer = await response.arrayBuffer();
+        const ext = file.file_path.split('.').pop() || 'jpg';
+        const filename = `${ctx.message.message_id}.${ext}`;
+
+        // Save to groups/{folder}/media/ — this directory is mounted at
+        // /workspace/group/ inside the agent container
+        const mediaDir = path.join(
+          process.cwd(),
+          'groups',
+          group.folder,
+          'media',
+        );
+        await fs.mkdir(mediaDir, { recursive: true });
+        await fs.writeFile(path.join(mediaDir, filename), Buffer.from(buffer));
+
+        logger.info(
+          { filename, size: buffer.byteLength },
+          'Telegram photo saved',
+        );
+
+        // Return the path as seen inside the agent container
+        return `/workspace/group/media/${filename}`;
+      } catch (err) {
+        logger.warn({ err }, 'Failed to download Telegram photo');
+        return null;
+      }
+    };
+
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return storeNonText(ctx, '[Photo]');
+
+      const containerPath = await downloadPhoto(ctx, group);
+      storeNonText(
+        ctx,
+        containerPath ? `[Photo: ${containerPath}]` : '[Photo]',
+      );
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
