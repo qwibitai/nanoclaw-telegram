@@ -37,8 +37,9 @@ export function stripMarkdown(text: string): string {
       ) => m.replace(/^`{3}\w*\n?/, '').replace(/\n?`{3}$/, ''),
     )
     .replace(/`(.+?)`/g, '$1') // `inline code`
-    .replace(/^\s*---+\s*$/gm, '') // horizontal rules
+    .replace(/^\s*[-*_]{3,}\s*$/gm, '') // horizontal rules
     .replace(/^>\s?/gm, '') // > blockquotes
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1') // ![alt](url) → alt
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
 }
 
@@ -46,7 +47,8 @@ function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /**
@@ -58,12 +60,14 @@ function escapeHtml(text: string): string {
  * HTML in the input is neutralised.
  */
 export function markdownToHtml(text: string): string {
-  if (!text) return text;
+  if (!text) return '';
 
-  // Phase 1: Extract code blocks and inline code before any processing.
-  // This prevents formatting regexes from matching inside code.
+  // Phase 1: Extract code blocks, inline code, and links before any processing.
+  // This prevents formatting regexes from matching inside code, and avoids
+  // double-escaping URLs (& in URLs would become &amp; if escaped with text).
   const codeBlocks: { lang: string; content: string }[] = [];
   const inlineCodes: string[] = [];
+  const links: { text: string; url: string }[] = [];
 
   // Fenced code blocks (``` ... ```)
   let result = text.replace(
@@ -78,6 +82,18 @@ export function markdownToHtml(text: string): string {
   result = result.replace(/`([^`]+)`/g, (_, content) => {
     inlineCodes.push(content);
     return `\x00IC${inlineCodes.length - 1}\x00`;
+  });
+
+  // Images: ![alt](url) — extract before links so ! prefix is consumed
+  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    links.push({ text: alt, url });
+    return `\x00LK${links.length - 1}\x00`;
+  });
+
+  // Links: [text](url)
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    links.push({ text: label, url });
+    return `\x00LK${links.length - 1}\x00`;
   });
 
   // Phase 2: HTML-escape all remaining text first (neutralises injected HTML)
@@ -110,18 +126,12 @@ export function markdownToHtml(text: string): string {
     return `<blockquote>${lines.join('\n')}</blockquote>`;
   });
 
-  // Images: ![alt](url) → link (before link regex so ! prefix is consumed)
-  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-
-  // Links: [text](url)
-  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-
   // Horizontal rules → remove
   result = result.replace(/^\s*[-*_]{3,}\s*$/gm, '');
 
   // Phase 3: Restore protected regions with HTML-escaped content
 
-  // Restore code blocks
+  // Restore code blocks — lang is safe (captured by \w* which only matches word chars)
   result = result.replace(/\x00CB(\d+)\x00/g, (_, idx) => {
     const block = codeBlocks[Number(idx)];
     const escaped = escapeHtml(block.content);
@@ -136,7 +146,46 @@ export function markdownToHtml(text: string): string {
     return `<code>${escapeHtml(inlineCodes[Number(idx)])}</code>`;
   });
 
+  // Restore links — URL is escaped for attribute context, text for HTML content
+  result = result.replace(/\x00LK(\d+)\x00/g, (_, idx) => {
+    const link = links[Number(idx)];
+    return `<a href="${escapeHtml(link.url)}">${escapeHtml(link.text)}</a>`;
+  });
+
   return result;
+}
+
+/**
+ * Split text into chunks of at most maxLength characters, preferring
+ * to break at newline boundaries. Falls back to hard split if a single
+ * line exceeds maxLength.
+ */
+export function splitAtBoundaries(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Find the last newline within the limit
+    const lastNewline = remaining.lastIndexOf('\n', maxLength - 1);
+
+    if (lastNewline > 0) {
+      chunks.push(remaining.slice(0, lastNewline));
+      remaining = remaining.slice(lastNewline + 1);
+    } else {
+      // No newline found — hard split as last resort
+      chunks.push(remaining.slice(0, maxLength));
+      remaining = remaining.slice(maxLength);
+    }
+  }
+
+  return chunks;
 }
 
 export class TelegramChannel implements Channel {
@@ -350,7 +399,7 @@ export class TelegramChannel implements Channel {
       // Fall back to clean plain text with markdown syntax stripped.
       logger.debug(
         { chatId },
-        'MarkdownV2 send failed, falling back to plain text',
+        'HTML send failed, falling back to plain text',
       );
       await this.bot!.api.sendMessage(chatId, stripMarkdown(chunk));
     }
@@ -365,15 +414,11 @@ export class TelegramChannel implements Channel {
     try {
       const numericId = jid.replace(/^tg:/, '');
 
-      // Split raw text first, then convert each chunk independently.
-      // This avoids breaking MarkdownV2 escape sequences mid-message.
-      const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await this.sendChunk(numericId, text);
-      } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await this.sendChunk(numericId, text.slice(i, i + MAX_LENGTH));
-        }
+      // Split raw text at newline boundaries, then convert each chunk independently.
+      // This avoids breaking markdown tokens mid-word (e.g. **bold** across chunks).
+      const chunks = splitAtBoundaries(text, 4096);
+      for (const chunk of chunks) {
+        await this.sendChunk(numericId, chunk);
       }
       logger.info({ jid, length: text.length }, 'Telegram message sent');
     } catch (err) {

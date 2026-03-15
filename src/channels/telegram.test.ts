@@ -74,6 +74,7 @@ import {
   TelegramChannelOpts,
   stripMarkdown,
   markdownToHtml,
+  splitAtBoundaries,
 } from './telegram.js';
 
 // --- Test helpers ---
@@ -1033,12 +1034,8 @@ describe('markdownToHtml', () => {
 
   it('converts fenced code blocks with language', () => {
     const input = '```python\nprint("hello")\n```';
-    const expected =
-      '<pre><code class="language-python">print(&quot;hello&quot;)\n</code></pre>';
-    // Note: quotes inside code are HTML-escaped via escapeHtml which handles & < >
-    // The " chars are not escaped by our escapeHtml (only & < >), so they pass through
     expect(markdownToHtml(input)).toBe(
-      '<pre><code class="language-python">print("hello")\n</code></pre>',
+      '<pre><code class="language-python">print(&quot;hello&quot;)\n</code></pre>',
     );
   });
 
@@ -1135,7 +1132,125 @@ describe('markdownToHtml', () => {
 
   it('neutralises injected HTML tags', () => {
     expect(markdownToHtml('<script>alert("xss")</script>')).toBe(
-      '&lt;script&gt;alert("xss")&lt;/script&gt;',
+      '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;',
     );
+  });
+
+  it('does not double-escape & in URLs', () => {
+    expect(markdownToHtml('[search](https://example.com?a=1&b=2)')).toBe(
+      '<a href="https://example.com?a=1&amp;b=2">search</a>',
+    );
+  });
+
+  it('escapes " in URLs to prevent attribute breakout', () => {
+    expect(markdownToHtml('[click](http://x"onmouseover="alert)')).toBe(
+      '<a href="http://x&quot;onmouseover=&quot;alert">click</a>',
+    );
+  });
+
+  it('returns empty string for falsy input', () => {
+    expect(markdownToHtml('')).toBe('');
+    expect(markdownToHtml(undefined as any)).toBe('');
+    expect(markdownToHtml(null as any)).toBe('');
+  });
+
+  it('handles unclosed formatting markers gracefully', () => {
+    // Should not throw or produce malformed HTML — just passes through
+    expect(markdownToHtml('**unclosed bold')).toBe('**unclosed bold');
+    expect(markdownToHtml('*unclosed italic')).toBe('*unclosed italic');
+  });
+
+  it('escapes " in regular text', () => {
+    expect(markdownToHtml('She said "hello"')).toBe(
+      'She said &quot;hello&quot;',
+    );
+  });
+});
+
+// --- stripMarkdown ---
+
+describe('stripMarkdown', () => {
+  it('strips heading markers', () => {
+    expect(stripMarkdown('# Title')).toBe('Title');
+    expect(stripMarkdown('### Deep')).toBe('Deep');
+  });
+
+  it('strips bold markers', () => {
+    expect(stripMarkdown('**bold**')).toBe('bold');
+    expect(stripMarkdown('__bold__')).toBe('bold');
+  });
+
+  it('strips italic markers', () => {
+    expect(stripMarkdown('*italic*')).toBe('italic');
+    expect(stripMarkdown('_italic_')).toBe('italic');
+  });
+
+  it('strips strikethrough markers', () => {
+    expect(stripMarkdown('~~strike~~')).toBe('strike');
+  });
+
+  it('strips code block fences but keeps content', () => {
+    expect(stripMarkdown('```js\nconsole.log(1)\n```')).toBe('console.log(1)');
+  });
+
+  it('strips inline code backticks', () => {
+    expect(stripMarkdown('use `npm install`')).toBe('use npm install');
+  });
+
+  it('strips blockquote markers', () => {
+    expect(stripMarkdown('> quoted text')).toBe('quoted text');
+  });
+
+  it('strips links keeping text', () => {
+    expect(stripMarkdown('[Google](https://google.com)')).toBe('Google');
+  });
+
+  it('strips images keeping alt text', () => {
+    expect(stripMarkdown('![photo](https://img.png)')).toBe('photo');
+  });
+
+  it('strips horizontal rules', () => {
+    expect(stripMarkdown('above\n---\nbelow')).toBe('above\n\nbelow');
+  });
+
+  it('handles mixed formatting', () => {
+    const input = '# Title\n\nSome **bold** and [link](url)';
+    const output = stripMarkdown(input);
+    expect(output).toBe('Title\n\nSome bold and link');
+  });
+});
+
+// --- splitAtBoundaries ---
+
+describe('splitAtBoundaries', () => {
+  it('returns single chunk when text fits', () => {
+    expect(splitAtBoundaries('hello', 100)).toEqual(['hello']);
+  });
+
+  it('splits at newline boundary', () => {
+    const text = 'line1\nline2\nline3';
+    const chunks = splitAtBoundaries(text, 10);
+    // "line1\nline2" = 11 chars > 10, so split at last \n before 10
+    // "line1" (5 chars), then "line2\nline3" (11 chars > 10), split again
+    expect(chunks).toEqual(['line1', 'line2', 'line3']);
+  });
+
+  it('hard-splits when no newline found', () => {
+    const text = 'a'.repeat(20);
+    const chunks = splitAtBoundaries(text, 8);
+    expect(chunks).toEqual(['a'.repeat(8), 'a'.repeat(8), 'a'.repeat(4)]);
+  });
+
+  it('prefers newline over hard split', () => {
+    const text = 'short\n' + 'x'.repeat(10);
+    const chunks = splitAtBoundaries(text, 10);
+    // "short\n" + "xxxxxxxxxx" = 16 chars. Last \n before pos 10 is at 5.
+    expect(chunks[0]).toBe('short');
+    expect(chunks[1]).toBe('x'.repeat(10));
+  });
+
+  it('handles exact boundary text', () => {
+    const text = 'a'.repeat(10);
+    expect(splitAtBoundaries(text, 10)).toEqual([text]);
   });
 });
