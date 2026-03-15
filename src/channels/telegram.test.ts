@@ -1062,9 +1062,7 @@ describe('markdownToHtml', () => {
   });
 
   it('does not apply formatting inside inline code', () => {
-    expect(markdownToHtml('`**not bold**`')).toBe(
-      '<code>**not bold**</code>',
-    );
+    expect(markdownToHtml('`**not bold**`')).toBe('<code>**not bold**</code>');
   });
 
   it('converts links', () => {
@@ -1096,9 +1094,7 @@ describe('markdownToHtml', () => {
   });
 
   it('keeps ordered lists as plain text', () => {
-    expect(markdownToHtml('1. first\n2. second')).toBe(
-      '1. first\n2. second',
-    );
+    expect(markdownToHtml('1. first\n2. second')).toBe('1. first\n2. second');
   });
 
   it('keeps unordered lists as plain text', () => {

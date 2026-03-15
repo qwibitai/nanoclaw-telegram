@@ -102,16 +102,13 @@ export function markdownToHtml(text: string): string {
 
   // Blockquotes: lines starting with > (HTML-escaped to &gt;)
   // Collect consecutive blockquote lines into a single <blockquote>
-  result = result.replace(
-    /(?:^&gt;\s?(.*)$\n?)+/gm,
-    (match) => {
-      const lines = match
-        .split('\n')
-        .filter((l) => l.length > 0)
-        .map((l) => l.replace(/^&gt;\s?/, ''));
-      return `<blockquote>${lines.join('\n')}</blockquote>`;
-    },
-  );
+  result = result.replace(/(?:^&gt;\s?(.*)$\n?)+/gm, (match) => {
+    const lines = match
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => l.replace(/^&gt;\s?/, ''));
+    return `<blockquote>${lines.join('\n')}</blockquote>`;
+  });
 
   // Images: ![alt](url) → link (before link regex so ! prefix is consumed)
   result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
