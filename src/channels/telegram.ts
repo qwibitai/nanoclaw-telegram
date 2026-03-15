@@ -397,10 +397,7 @@ export class TelegramChannel implements Channel {
     } catch {
       // HTML send failed (e.g. malformed tags from edge-case markdown).
       // Fall back to clean plain text with markdown syntax stripped.
-      logger.debug(
-        { chatId },
-        'HTML send failed, falling back to plain text',
-      );
+      logger.debug({ chatId }, 'HTML send failed, falling back to plain text');
       await this.bot!.api.sendMessage(chatId, stripMarkdown(chunk));
     }
   }
