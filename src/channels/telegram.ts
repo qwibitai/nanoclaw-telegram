@@ -1,6 +1,5 @@
 import https from 'https';
 import { Bot } from 'grammy';
-import telegramifyMarkdown from 'telegramify-markdown';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -41,6 +40,106 @@ export function stripMarkdown(text: string): string {
     .replace(/^\s*---+\s*$/gm, '') // horizontal rules
     .replace(/^>\s?/gm, '') // > blockquotes
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Convert standard Markdown (as produced by LLMs) to Telegram-compatible HTML.
+ * Only emits tags that Telegram's HTML parse_mode supports:
+ * <b>, <i>, <s>, <code>, <pre>, <a href>, <blockquote>.
+ *
+ * Security: all text is HTML-escaped before tags are applied, so injected
+ * HTML in the input is neutralised.
+ */
+export function markdownToHtml(text: string): string {
+  if (!text) return text;
+
+  // Phase 1: Extract code blocks and inline code before any processing.
+  // This prevents formatting regexes from matching inside code.
+  const codeBlocks: { lang: string; content: string }[] = [];
+  const inlineCodes: string[] = [];
+
+  // Fenced code blocks (``` ... ```)
+  let result = text.replace(
+    /^```(\w*)\n([\s\S]*?)^```$/gm,
+    (_, lang, content) => {
+      codeBlocks.push({ lang, content });
+      return `\x00CB${codeBlocks.length - 1}\x00`;
+    },
+  );
+
+  // Inline code (` ... `)
+  result = result.replace(/`([^`]+)`/g, (_, content) => {
+    inlineCodes.push(content);
+    return `\x00IC${inlineCodes.length - 1}\x00`;
+  });
+
+  // Phase 2: HTML-escape all remaining text first (neutralises injected HTML)
+  result = escapeHtml(result);
+
+  // Formatting conversions — order matters:
+  // Double-char markers (**,__,~~) before single-char (*,_)
+
+  // Bold: **text** and __text__
+  result = result.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  result = result.replace(/__(.+?)__/g, '<b>$1</b>');
+
+  // Italic: *text* and _text_
+  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<i>$1</i>');
+  result = result.replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<i>$1</i>');
+
+  // Strikethrough: ~~text~~
+  result = result.replace(/~~(.+?)~~/g, '<s>$1</s>');
+
+  // Headings → bold (no <h1>-<h6> in Telegram)
+  result = result.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
+
+  // Blockquotes: lines starting with > (HTML-escaped to &gt;)
+  // Collect consecutive blockquote lines into a single <blockquote>
+  result = result.replace(
+    /(?:^&gt;\s?(.*)$\n?)+/gm,
+    (match) => {
+      const lines = match
+        .split('\n')
+        .filter((l) => l.length > 0)
+        .map((l) => l.replace(/^&gt;\s?/, ''));
+      return `<blockquote>${lines.join('\n')}</blockquote>`;
+    },
+  );
+
+  // Images: ![alt](url) → link (before link regex so ! prefix is consumed)
+  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // Links: [text](url)
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // Horizontal rules → remove
+  result = result.replace(/^\s*[-*_]{3,}\s*$/gm, '');
+
+  // Phase 3: Restore protected regions with HTML-escaped content
+
+  // Restore code blocks
+  result = result.replace(/\x00CB(\d+)\x00/g, (_, idx) => {
+    const block = codeBlocks[Number(idx)];
+    const escaped = escapeHtml(block.content);
+    if (block.lang) {
+      return `<pre><code class="language-${block.lang}">${escaped}</code></pre>`;
+    }
+    return `<pre>${escaped}</pre>`;
+  });
+
+  // Restore inline code
+  result = result.replace(/\x00IC(\d+)\x00/g, (_, idx) => {
+    return `<code>${escapeHtml(inlineCodes[Number(idx)])}</code>`;
+  });
+
+  return result;
 }
 
 export class TelegramChannel implements Channel {
@@ -240,17 +339,17 @@ export class TelegramChannel implements Channel {
   }
 
   /**
-   * Convert a raw text chunk to MarkdownV2 and send it, falling back to
+   * Convert a raw text chunk to HTML and send it, falling back to
    * clean plain text if Telegram rejects the formatted message.
    */
   private async sendChunk(chatId: string, chunk: string): Promise<void> {
     try {
-      const formatted = telegramifyMarkdown(chunk, 'escape');
+      const formatted = markdownToHtml(chunk);
       await this.bot!.api.sendMessage(chatId, formatted, {
-        parse_mode: 'MarkdownV2',
+        parse_mode: 'HTML',
       });
     } catch {
-      // MarkdownV2 failed (e.g. library bug with tables/blockquotes).
+      // HTML send failed (e.g. malformed tags from edge-case markdown).
       // Fall back to clean plain text with markdown syntax stripped.
       logger.debug(
         { chatId },

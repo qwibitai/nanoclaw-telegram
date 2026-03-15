@@ -14,11 +14,6 @@ vi.mock('../config.js', () => ({
   TRIGGER_PATTERN: /^@Andy\b/i,
 }));
 
-// Pass-through: conversion correctness is the library's responsibility
-vi.mock('telegramify-markdown', () => ({
-  default: (text: string) => text,
-}));
-
 // Mock logger
 vi.mock('../logger.js', () => ({
   logger: {
@@ -78,6 +73,7 @@ import {
   TelegramChannel,
   TelegramChannelOpts,
   stripMarkdown,
+  markdownToHtml,
 } from './telegram.js';
 
 // --- Test helpers ---
@@ -722,7 +718,7 @@ describe('TelegramChannel', () => {
   // --- sendMessage ---
 
   describe('sendMessage', () => {
-    it('sends message with MarkdownV2 parse mode', async () => {
+    it('sends message with HTML parse mode', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -732,7 +728,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '100200300',
         'Hello',
-        { parse_mode: 'MarkdownV2' },
+        { parse_mode: 'HTML' },
       );
     });
 
@@ -745,12 +741,12 @@ describe('TelegramChannel', () => {
 
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '-1001234567890',
-        'Group message',
-        { parse_mode: 'MarkdownV2' },
+        expect.any(String),
+        { parse_mode: 'HTML' },
       );
     });
 
-    it('falls back to stripped plain text when MarkdownV2 send fails', async () => {
+    it('falls back to stripped plain text when HTML send fails', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -761,13 +757,13 @@ describe('TelegramChannel', () => {
 
       await channel.sendMessage('tg:100200300', 'Hello **bold**');
 
-      // First call: MarkdownV2 attempt, second call: stripped plain text
+      // First call: HTML attempt, second call: stripped plain text
       expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         1,
         '100200300',
-        'Hello **bold**',
-        { parse_mode: 'MarkdownV2' },
+        expect.any(String),
+        { parse_mode: 'HTML' },
       );
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         2,
@@ -788,14 +784,14 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         1,
         '100200300',
-        'x'.repeat(4096),
-        { parse_mode: 'MarkdownV2' },
+        expect.any(String),
+        { parse_mode: 'HTML' },
       );
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         2,
         '100200300',
-        'x'.repeat(904),
-        { parse_mode: 'MarkdownV2' },
+        expect.any(String),
+        { parse_mode: 'HTML' },
       );
     });
 
@@ -981,5 +977,169 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', createTestOpts());
       expect(channel.name).toBe('telegram');
     });
+  });
+});
+
+// --- markdownToHtml ---
+
+describe('markdownToHtml', () => {
+  it('returns empty string unchanged', () => {
+    expect(markdownToHtml('')).toBe('');
+  });
+
+  it('returns plain text unchanged', () => {
+    expect(markdownToHtml('Hello world')).toBe('Hello world');
+  });
+
+  it('escapes HTML special characters', () => {
+    expect(markdownToHtml('a < b & c > d')).toBe('a &lt; b &amp; c &gt; d');
+  });
+
+  it('converts **bold** to <b>', () => {
+    expect(markdownToHtml('**bold**')).toBe('<b>bold</b>');
+  });
+
+  it('converts __bold__ to <b>', () => {
+    expect(markdownToHtml('__bold__')).toBe('<b>bold</b>');
+  });
+
+  it('converts *italic* to <i>', () => {
+    expect(markdownToHtml('*italic*')).toBe('<i>italic</i>');
+  });
+
+  it('converts _italic_ to <i>', () => {
+    expect(markdownToHtml('_italic_')).toBe('<i>italic</i>');
+  });
+
+  it('converts ~~strike~~ to <s>', () => {
+    expect(markdownToHtml('~~strike~~')).toBe('<s>strike</s>');
+  });
+
+  it('converts headings to bold', () => {
+    expect(markdownToHtml('# Title')).toBe('<b>Title</b>');
+    expect(markdownToHtml('## Subtitle')).toBe('<b>Subtitle</b>');
+    expect(markdownToHtml('### Deep')).toBe('<b>Deep</b>');
+  });
+
+  it('converts inline code', () => {
+    expect(markdownToHtml('use `npm install`')).toBe(
+      'use <code>npm install</code>',
+    );
+  });
+
+  it('HTML-escapes content inside inline code', () => {
+    expect(markdownToHtml('`a < b>`')).toBe('<code>a &lt; b&gt;</code>');
+  });
+
+  it('converts fenced code blocks with language', () => {
+    const input = '```python\nprint("hello")\n```';
+    const expected =
+      '<pre><code class="language-python">print(&quot;hello&quot;)\n</code></pre>';
+    // Note: quotes inside code are HTML-escaped via escapeHtml which handles & < >
+    // The " chars are not escaped by our escapeHtml (only & < >), so they pass through
+    expect(markdownToHtml(input)).toBe(
+      '<pre><code class="language-python">print("hello")\n</code></pre>',
+    );
+  });
+
+  it('converts fenced code blocks without language', () => {
+    const input = '```\nsome code\n```';
+    expect(markdownToHtml(input)).toBe('<pre>some code\n</pre>');
+  });
+
+  it('HTML-escapes content inside code blocks', () => {
+    const input = '```html\n<div>test</div>\n```';
+    expect(markdownToHtml(input)).toBe(
+      '<pre><code class="language-html">&lt;div&gt;test&lt;/div&gt;\n</code></pre>',
+    );
+  });
+
+  it('does not apply formatting inside code blocks', () => {
+    const input = '```\n**not bold** *not italic*\n```';
+    expect(markdownToHtml(input)).toBe(
+      '<pre>**not bold** *not italic*\n</pre>',
+    );
+  });
+
+  it('does not apply formatting inside inline code', () => {
+    expect(markdownToHtml('`**not bold**`')).toBe(
+      '<code>**not bold**</code>',
+    );
+  });
+
+  it('converts links', () => {
+    expect(markdownToHtml('[Google](https://google.com)')).toBe(
+      '<a href="https://google.com">Google</a>',
+    );
+  });
+
+  it('converts images to links', () => {
+    expect(markdownToHtml('![alt text](https://img.png)')).toBe(
+      '<a href="https://img.png">alt text</a>',
+    );
+  });
+
+  it('converts blockquotes', () => {
+    expect(markdownToHtml('> quoted text')).toBe(
+      '<blockquote>quoted text</blockquote>',
+    );
+  });
+
+  it('collects consecutive blockquote lines', () => {
+    expect(markdownToHtml('> line 1\n> line 2')).toBe(
+      '<blockquote>line 1\nline 2</blockquote>',
+    );
+  });
+
+  it('removes horizontal rules', () => {
+    expect(markdownToHtml('above\n---\nbelow')).toBe('above\n\nbelow');
+  });
+
+  it('keeps ordered lists as plain text', () => {
+    expect(markdownToHtml('1. first\n2. second')).toBe(
+      '1. first\n2. second',
+    );
+  });
+
+  it('keeps unordered lists as plain text', () => {
+    expect(markdownToHtml('- item one\n- item two')).toBe(
+      '- item one\n- item two',
+    );
+  });
+
+  it('handles bold before italic correctly', () => {
+    expect(markdownToHtml('**bold** and *italic*')).toBe(
+      '<b>bold</b> and <i>italic</i>',
+    );
+  });
+
+  it('handles mixed formatting in realistic LLM output', () => {
+    const input = [
+      '# Summary',
+      '',
+      'Here are the **key points**:',
+      '',
+      '1. First item',
+      '2. Second item with `code`',
+      '',
+      '> Important note',
+      '',
+      'See [docs](https://example.com) for more.',
+    ].join('\n');
+
+    const output = markdownToHtml(input);
+
+    expect(output).toContain('<b>Summary</b>');
+    expect(output).toContain('<b>key points</b>');
+    expect(output).toContain('<code>code</code>');
+    expect(output).toContain('<blockquote>Important note</blockquote>');
+    expect(output).toContain('<a href="https://example.com">docs</a>');
+    expect(output).toContain('1. First item');
+  });
+
+  it('neutralises injected HTML tags', () => {
+    expect(markdownToHtml('<script>alert("xss")</script>')).toBe(
+      '&lt;script&gt;alert("xss")&lt;/script&gt;',
+    );
   });
 });
