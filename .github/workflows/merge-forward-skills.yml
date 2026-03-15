@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   merge-forward:
+    if: github.repository == 'qwibitai/nanoclaw'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -141,6 +142,7 @@ jobs:
               'nanoclaw-discord',
               'nanoclaw-slack',
               'nanoclaw-gmail',
+              'nanoclaw-docker-sandboxes',
             ];
             const sha = context.sha.substring(0, 7);
             for (const repo of forks) {
