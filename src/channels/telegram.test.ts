@@ -12,7 +12,34 @@ vi.mock('../env.js', () => ({ readEnvFile: vi.fn(() => ({})) }));
 vi.mock('../config.js', () => ({
   ASSISTANT_NAME: 'Andy',
   TRIGGER_PATTERN: /^@Andy\b/i,
+  DATA_DIR: '/tmp/test-data',
 }));
+
+// Mock fs for media download
+vi.mock('fs', () => ({
+  default: {
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+  },
+}));
+
+// Mock https for downloadUrl
+vi.mock('https', () => {
+  const { EventEmitter } = require('events');
+  return {
+    default: {
+      get: vi.fn((_url: string, cb: (res: any) => void) => {
+        const res = new EventEmitter();
+        setTimeout(() => {
+          res.emit('data', Buffer.from('fake-image-data'));
+          res.emit('end');
+        }, 0);
+        cb(res);
+        return { on: vi.fn().mockReturnThis() };
+      }),
+    },
+  };
+});
 
 // Mock logger
 vi.mock('../logger.js', () => ({
@@ -40,6 +67,7 @@ vi.mock('grammy', () => ({
     api = {
       sendMessage: vi.fn().mockResolvedValue(undefined),
       sendChatAction: vi.fn().mockResolvedValue(undefined),
+      getFile: vi.fn().mockResolvedValue({ file_path: 'photos/test.jpg' }),
     };
 
     constructor(token: string) {
@@ -962,7 +990,8 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Reply to Bob: We should use TypeScript]\nI agree with this',
+          content:
+            '[Reply to Bob: We should use TypeScript]\nI agree with this',
         }),
       );
     });
@@ -1012,7 +1041,7 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('describes non-text reply messages', async () => {
+    it('downloads photo from reply and includes path', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -1029,12 +1058,39 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Reply to Bob: [Photo]]\nNice photo!',
+          content: expect.stringMatching(
+            /\[Reply to Bob: \[Photo\] saved to: \/workspace\/group\/documents\/\d+_reply\.jpg\]\nNice photo!/,
+          ),
         }),
       );
     });
 
-    it('includes reply context in non-text (media) messages', async () => {
+    it('downloads document from reply and includes path with caption', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createTextCtx({
+        text: 'Thanks for the file',
+        reply_to_message: {
+          from: { first_name: 'Bob' },
+          document: { file_id: 'doc123', file_name: 'report.pdf' },
+          caption: 'Q1 report',
+        },
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: expect.stringMatching(
+            /\[Reply to Bob: \[Document: report\.pdf\] saved to: \/workspace\/group\/documents\/\d+_reply\.pdf — Q1 report\]\nThanks for the file/,
+          ),
+        }),
+      );
+    });
+
+    it('includes reply context with media download in non-text messages', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -1067,6 +1123,31 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content: 'Just a normal message',
+        }),
+      );
+    });
+
+    it('falls back to text description when media download fails', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Make getFile reject to simulate download failure
+      currentBot().api.getFile.mockRejectedValueOnce(new Error('File too old'));
+
+      const ctx = createTextCtx({
+        text: 'What was that?',
+        reply_to_message: {
+          from: { first_name: 'Bob' },
+          photo: [{ file_id: 'expired123' }],
+        },
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Reply to Bob: [Photo]]\nWhat was that?',
         }),
       );
     });
