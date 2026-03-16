@@ -12,6 +12,38 @@ import {
   RegisteredGroup,
 } from '../types.js';
 
+/**
+ * Describe a Telegram message for reply context.
+ * Returns a short text summary of any message type.
+ */
+function describeMessage(msg: any): string {
+  if (msg.text) return msg.text;
+  if (msg.caption) return `[Media] ${msg.caption}`;
+  if (msg.photo) return '[Photo]';
+  if (msg.video) return '[Video]';
+  if (msg.voice || msg.audio) return '[Audio]';
+  if (msg.document) return `[Document: ${msg.document.file_name || 'file'}]`;
+  if (msg.sticker) return `[Sticker: ${msg.sticker.emoji || ''}]`;
+  if (msg.location) return '[Location]';
+  if (msg.contact) return `[Contact: ${msg.contact.first_name || ''}]`;
+  return '[Message]';
+}
+
+/**
+ * Build a reply-context prefix string from a replied-to message.
+ * Returns empty string if there is no reply.
+ */
+function replyPrefix(msg: any): string {
+  const replyMsg = msg.reply_to_message;
+  if (!replyMsg) return '';
+  const replySender =
+    replyMsg.from?.first_name || replyMsg.from?.username || 'Unknown';
+  const replyText = describeMessage(replyMsg);
+  const truncated =
+    replyText.length > 200 ? replyText.slice(0, 200) + '…' : replyText;
+  return `[Reply to ${replySender}: ${truncated}]\n`;
+}
+
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
@@ -92,6 +124,13 @@ export class TelegramChannel implements Channel {
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
+
+      // Include reply context so the agent knows what message is being replied to
+      const replyCtx = replyPrefix(ctx.message);
+      if (replyCtx) {
+        content = replyCtx + content;
+      }
+
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
         ctx.from?.first_name ||
@@ -178,6 +217,7 @@ export class TelegramChannel implements Channel {
         ctx.from?.id?.toString() ||
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+      const replyCtx = replyPrefix(ctx.message);
 
       const isGroup =
         ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
@@ -193,7 +233,7 @@ export class TelegramChannel implements Channel {
         chat_jid: chatJid,
         sender: ctx.from?.id?.toString() || '',
         sender_name: senderName,
-        content: `${placeholder}${caption}`,
+        content: `${replyCtx}${placeholder}${caption}`,
         timestamp,
         is_from_me: false,
       });

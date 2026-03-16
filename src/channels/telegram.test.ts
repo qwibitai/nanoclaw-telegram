@@ -102,6 +102,7 @@ function createTextCtx(overrides: {
   messageId?: number;
   date?: number;
   entities?: any[];
+  reply_to_message?: any;
 }) {
   const chatId = overrides.chatId ?? 100200300;
   const chatType = overrides.chatType ?? 'group';
@@ -121,6 +122,7 @@ function createTextCtx(overrides: {
       date: overrides.date ?? Math.floor(Date.now() / 1000),
       message_id: overrides.messageId ?? 1,
       entities: overrides.entities ?? [],
+      reply_to_message: overrides.reply_to_message,
     },
     me: { username: 'andy_ai_bot' },
     reply: vi.fn(),
@@ -136,6 +138,7 @@ function createMediaCtx(overrides: {
   messageId?: number;
   caption?: string;
   extra?: Record<string, any>;
+  reply_to_message?: any;
 }) {
   const chatId = overrides.chatId ?? 100200300;
   return {
@@ -153,6 +156,7 @@ function createMediaCtx(overrides: {
       date: overrides.date ?? Math.floor(Date.now() / 1000),
       message_id: overrides.messageId ?? 1,
       caption: overrides.caption,
+      reply_to_message: overrides.reply_to_message,
       ...(overrides.extra || {}),
     },
     me: { username: 'andy_ai_bot' },
@@ -935,6 +939,136 @@ describe('TelegramChannel', () => {
       await handler(ctx);
 
       expect(ctx.reply).toHaveBeenCalledWith('Andy is online.');
+    });
+  });
+
+  // --- Reply context ---
+
+  describe('reply context', () => {
+    it('prepends reply context for text replies', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createTextCtx({
+        text: 'I agree with this',
+        reply_to_message: {
+          from: { first_name: 'Bob', username: 'bob_user' },
+          text: 'We should use TypeScript',
+        },
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Reply to Bob: We should use TypeScript]\nI agree with this',
+        }),
+      );
+    });
+
+    it('falls back to username when first_name missing in reply', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createTextCtx({
+        text: 'Yes',
+        reply_to_message: {
+          from: { username: 'bob_user' },
+          text: 'Original message',
+        },
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Reply to bob_user: Original message]\nYes',
+        }),
+      );
+    });
+
+    it('truncates long reply text at 200 characters', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const longText = 'a'.repeat(250);
+      const ctx = createTextCtx({
+        text: 'TL;DR',
+        reply_to_message: {
+          from: { first_name: 'Bob' },
+          text: longText,
+        },
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: `[Reply to Bob: ${'a'.repeat(200)}…]\nTL;DR`,
+        }),
+      );
+    });
+
+    it('describes non-text reply messages', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createTextCtx({
+        text: 'Nice photo!',
+        reply_to_message: {
+          from: { first_name: 'Bob' },
+          photo: [{ file_id: 'abc' }],
+        },
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Reply to Bob: [Photo]]\nNice photo!',
+        }),
+      );
+    });
+
+    it('includes reply context in non-text (media) messages', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        reply_to_message: {
+          from: { first_name: 'Bob' },
+          text: 'Send me a photo',
+        },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Reply to Bob: Send me a photo]\n[Photo]',
+        }),
+      );
+    });
+
+    it('does not add prefix when there is no reply', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createTextCtx({ text: 'Just a normal message' });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: 'Just a normal message',
+        }),
+      );
     });
   });
 
