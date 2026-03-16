@@ -1,7 +1,9 @@
+import fs from 'fs';
 import https from 'https';
+import path from 'path';
 import { Api, Bot } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, DATA_DIR, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -11,6 +13,131 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+
+/**
+ * Describe a Telegram message for reply context.
+ * Returns a short text summary of any message type.
+ */
+function describeMessage(msg: any): string {
+  if (msg.text) return msg.text;
+  if (msg.caption) return `[Media] ${msg.caption}`;
+  if (msg.photo) return '[Photo]';
+  if (msg.video) return '[Video]';
+  if (msg.voice || msg.audio) return '[Audio]';
+  if (msg.document) return `[Document: ${msg.document.file_name || 'file'}]`;
+  if (msg.sticker) return `[Sticker: ${msg.sticker.emoji || ''}]`;
+  if (msg.location) return '[Location]';
+  if (msg.contact) return `[Contact: ${msg.contact.first_name || ''}]`;
+  return '[Message]';
+}
+
+/**
+ * Download a file from a replied-to message and return its saved path.
+ * Returns null if the reply has no downloadable media or download fails.
+ */
+async function downloadReplyMedia(
+  replyMsg: any,
+  botApi: Api,
+  botToken: string,
+  groupFolder: string,
+): Promise<string | null> {
+  try {
+    let fileId: string | undefined;
+    let ext = 'bin';
+
+    if (replyMsg.photo) {
+      const photos = replyMsg.photo;
+      fileId = photos[photos.length - 1]?.file_id;
+      ext = 'jpg';
+    } else if (replyMsg.video) {
+      fileId = replyMsg.video.file_id;
+      ext = 'mp4';
+    } else if (replyMsg.voice) {
+      fileId = replyMsg.voice.file_id;
+      ext = 'ogg';
+    } else if (replyMsg.audio) {
+      fileId = replyMsg.audio.file_id;
+      ext = 'mp3';
+    } else if (replyMsg.document) {
+      fileId = replyMsg.document.file_id;
+      const name = replyMsg.document.file_name || '';
+      const dotIdx = name.lastIndexOf('.');
+      if (dotIdx > 0) ext = name.slice(dotIdx + 1);
+    } else if (replyMsg.sticker && !replyMsg.sticker.is_animated) {
+      fileId = replyMsg.sticker.file_id;
+      ext = 'webp';
+    }
+
+    if (!fileId) return null;
+
+    const fileInfo = await botApi.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${botToken}/${fileInfo.file_path}`;
+    const fileBuffer = await downloadUrl(fileUrl);
+
+    const documentsDir = path.join(DATA_DIR, 'documents', groupFolder);
+    fs.mkdirSync(documentsDir, { recursive: true });
+
+    const fileTs = Date.now();
+    const localFileName = `${fileTs}_reply.${ext}`;
+    const localPath = path.join(documentsDir, localFileName);
+    fs.writeFileSync(localPath, fileBuffer);
+
+    logger.info(
+      { groupFolder, localFileName, size: fileBuffer.length },
+      'Downloaded reply media',
+    );
+    return `/workspace/group/documents/${localFileName}`;
+  } catch (err) {
+    logger.error({ err }, 'Failed to download reply media');
+    return null;
+  }
+}
+
+/**
+ * Build a reply-context prefix string from a replied-to message.
+ * Downloads media from the reply when possible so the agent can access it.
+ * Returns empty string if there is no reply.
+ */
+async function replyPrefix(
+  msg: any,
+  botApi?: Api,
+  botToken?: string,
+  groupFolder?: string,
+): Promise<string> {
+  const replyMsg = msg.reply_to_message;
+  if (!replyMsg) return '';
+  const replySender =
+    replyMsg.from?.first_name || replyMsg.from?.username || 'Unknown';
+
+  // Try to download media from the reply
+  let mediaPath: string | null = null;
+  if (botApi && botToken && groupFolder) {
+    mediaPath = await downloadReplyMedia(
+      replyMsg,
+      botApi,
+      botToken,
+      groupFolder,
+    );
+  }
+
+  if (mediaPath) {
+    const caption = replyMsg.caption ? ` — ${replyMsg.caption}` : '';
+    let typeLabel = '[File]';
+    if (replyMsg.photo) typeLabel = '[Photo]';
+    else if (replyMsg.video) typeLabel = '[Video]';
+    else if (replyMsg.voice) typeLabel = '[Voice]';
+    else if (replyMsg.audio) typeLabel = '[Audio]';
+    else if (replyMsg.document)
+      typeLabel = `[Document: ${replyMsg.document.file_name || 'file'}]`;
+    else if (replyMsg.sticker) typeLabel = '[Sticker]';
+    return `[Reply to ${replySender}: ${typeLabel} saved to: ${mediaPath}${caption}]\n`;
+  }
+
+  const replyText = describeMessage(replyMsg);
+  const truncated =
+    replyText.length > 200 ? replyText.slice(0, 200) + '…' : replyText;
+  return `[Reply to ${replySender}: ${truncated}]\n`;
+}
 
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
@@ -92,6 +219,19 @@ export class TelegramChannel implements Channel {
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
+
+      // Include reply context so the agent knows what message is being replied to
+      const group = this.opts.registeredGroups()[chatJid];
+      const replyCtx = await replyPrefix(
+        ctx.message,
+        this.bot!.api,
+        this.botToken,
+        group?.folder,
+      );
+      if (replyCtx) {
+        content = replyCtx + content;
+      }
+
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
         ctx.from?.first_name ||
@@ -139,7 +279,6 @@ export class TelegramChannel implements Channel {
       );
 
       // Only deliver full message for registered groups
-      const group = this.opts.registeredGroups()[chatJid];
       if (!group) {
         logger.debug(
           { chatJid, chatName },
@@ -166,7 +305,7 @@ export class TelegramChannel implements Channel {
     });
 
     // Handle non-text messages with placeholders so the agent knows something was sent
-    const storeNonText = (ctx: any, placeholder: string) => {
+    const storeNonText = async (ctx: any, placeholder: string) => {
       const chatJid = `tg:${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
@@ -178,6 +317,12 @@ export class TelegramChannel implements Channel {
         ctx.from?.id?.toString() ||
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+      const replyCtx = await replyPrefix(
+        ctx.message,
+        this.bot!.api,
+        this.botToken,
+        group.folder,
+      );
 
       const isGroup =
         ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
@@ -193,7 +338,7 @@ export class TelegramChannel implements Channel {
         chat_jid: chatJid,
         sender: ctx.from?.id?.toString() || '',
         sender_name: senderName,
-        content: `${placeholder}${caption}`,
+        content: `${replyCtx}${placeholder}${caption}`,
         timestamp,
         is_from_me: false,
       });
@@ -290,6 +435,19 @@ export class TelegramChannel implements Channel {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
     }
   }
+}
+
+function downloadUrl(url: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('error', reject);
+      })
+      .on('error', reject);
+  });
 }
 
 registerChannel('telegram', (opts: ChannelOpts) => {
