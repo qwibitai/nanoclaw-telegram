@@ -1,9 +1,11 @@
 import https from 'https';
-import { Api, Bot } from 'grammy';
+import path from 'path';
+import { Api, Bot, InputFile } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, GROUPS_DIR, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { parseMediaReferences, saveTelegramDocument, saveTelegramPhoto } from '../telegram-media.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -199,13 +201,93 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+
+      let content: string;
+      try {
+        const groupDir = path.join(GROUPS_DIR, group.folder);
+        const relPath = await saveTelegramPhoto(
+          this.botToken,
+          ctx.message.photo,
+          groupDir,
+          ctx.message.message_id.toString(),
+        );
+        content = `[Photo: ${relPath}]${caption}`;
+      } catch (err) {
+        logger.warn({ err, chatJid }, 'Failed to download photo, using placeholder');
+        content = `[Photo]${caption}`;
+      }
+
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender: ctx.from?.id?.toString() || '',
+        sender_name: senderName,
+        content,
+        timestamp,
+        is_from_me: false,
+      });
+    });
+
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
-    this.bot.on('message:document', (ctx) => {
-      const name = ctx.message.document?.file_name || 'file';
-      storeNonText(ctx, `[Document: ${name}]`);
+
+    this.bot.on('message:document', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+      const fileName = ctx.message.document?.file_name || 'file';
+
+      let content: string;
+      try {
+        const groupDir = path.join(GROUPS_DIR, group.folder);
+        const relPath = await saveTelegramDocument(
+          this.botToken,
+          ctx.message.document!,
+          groupDir,
+          ctx.message.message_id.toString(),
+        );
+        content = `[Document: ${relPath}]${caption}`;
+      } catch (err) {
+        logger.warn({ err, chatJid }, 'Failed to download document, using placeholder');
+        content = `[Document: ${fileName}]${caption}`;
+      }
+
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender: ctx.from?.id?.toString() || '',
+        sender_name: senderName,
+        content,
+        timestamp,
+        is_from_me: false,
+      });
     });
     this.bot.on('message:sticker', (ctx) => {
       const emoji = ctx.message.sticker?.emoji || '';
@@ -246,20 +328,49 @@ export class TelegramChannel implements Channel {
     try {
       const numericId = jid.replace(/^tg:/, '');
 
-      // Telegram has a 4096 character limit per message — split if needed
-      const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text);
-      } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await sendTelegramMessage(
-            this.bot.api,
-            numericId,
-            text.slice(i, i + MAX_LENGTH),
-          );
+      // Check for media references in agent output
+      const { refs, plainText } = parseMediaReferences(text);
+
+      if (refs.length > 0) {
+        const group = this.opts.registeredGroups()[jid];
+        if (group) {
+          const groupDir = path.join(GROUPS_DIR, group.folder);
+          for (const ref of refs) {
+            const filePath = path.resolve(groupDir, ref.relativePath);
+            if (!filePath.startsWith(groupDir)) {
+              logger.warn({ jid, ref }, 'Media path escapes group directory, skipping');
+              continue;
+            }
+            try {
+              if (ref.type === 'photo') {
+                await this.bot.api.sendPhoto(numericId, new InputFile(filePath));
+              } else {
+                await this.bot.api.sendDocument(numericId, new InputFile(filePath));
+              }
+            } catch (err) {
+              logger.warn({ jid, ref, err }, 'Failed to send media, sending as text');
+              await sendTelegramMessage(this.bot.api, numericId, `[${ref.type}: ${ref.relativePath}]`);
+            }
+          }
         }
       }
-      logger.info({ jid, length: text.length }, 'Telegram message sent');
+
+      // Send remaining text (if any)
+      if (plainText) {
+        const MAX_LENGTH = 4096;
+        if (plainText.length <= MAX_LENGTH) {
+          await sendTelegramMessage(this.bot.api, numericId, plainText);
+        } else {
+          for (let i = 0; i < plainText.length; i += MAX_LENGTH) {
+            await sendTelegramMessage(
+              this.bot.api,
+              numericId,
+              plainText.slice(i, i + MAX_LENGTH),
+            );
+          }
+        }
+      }
+      logger.info({ jid, length: text.length, mediaCount: refs.length }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
     }
