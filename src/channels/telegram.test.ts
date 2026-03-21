@@ -61,7 +61,10 @@ vi.mock('grammy', () => ({
       this.errorHandler = handler;
     }
 
-    start(opts: { onStart: (botInfo: any) => void }) {
+    start(opts: {
+      onStart: (botInfo: any) => void;
+      allowed_updates?: string[];
+    }) {
       opts.onStart({ username: 'andy_ai_bot', id: 12345 });
     }
 
@@ -176,6 +179,20 @@ async function triggerMediaMessage(
   for (const h of handlers) await h(ctx);
 }
 
+async function triggerCallbackQuery(ctx: {
+  callbackQuery: {
+    id: string;
+    from: { id: number; first_name?: string; username?: string };
+    message?: { chat: { id: number }; message_id: number };
+    data: string;
+  };
+  answerCallbackQuery: ReturnType<typeof vi.fn>;
+}) {
+  const handlers =
+    currentBot().filterHandlers.get('callback_query:data') || [];
+  for (const h of handlers) await h(ctx);
+}
+
 // --- Tests ---
 
 describe('TelegramChannel', () => {
@@ -216,6 +233,9 @@ describe('TelegramChannel', () => {
       expect(currentBot().filterHandlers.has('message:sticker')).toBe(true);
       expect(currentBot().filterHandlers.has('message:location')).toBe(true);
       expect(currentBot().filterHandlers.has('message:contact')).toBe(true);
+      expect(currentBot().filterHandlers.has('callback_query:data')).toBe(
+        true,
+      );
     });
 
     it('registers error handler on connect', async () => {
@@ -798,6 +818,105 @@ describe('TelegramChannel', () => {
       await channel.sendMessage('tg:100200300', 'No bot');
 
       // No error, no API call
+    });
+  });
+
+  // --- Callback queries ---
+
+  describe('callback queries', () => {
+    it('delivers callback query data as message', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
+      await triggerCallbackQuery({
+        callbackQuery: {
+          id: 'cbq-123',
+          from: { id: 99001, first_name: 'Alice', username: 'alice_user' },
+          message: { chat: { id: 100200300 }, message_id: 42 },
+          data: 'approve_task',
+        },
+        answerCallbackQuery,
+      });
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          id: 'callback-cbq-123',
+          chat_jid: 'tg:100200300',
+          sender: '99001',
+          sender_name: 'Alice',
+          is_from_me: false,
+        }),
+      );
+
+      const msg = (opts.onMessage as any).mock.calls[0][1];
+      const parsed = JSON.parse(msg.content);
+      expect(parsed._type).toBe('callback_query');
+      expect(parsed.data).toBe('approve_task');
+      expect(parsed.query_id).toBe('cbq-123');
+      expect(parsed.message_id).toBe(42);
+      expect(parsed.from_name).toBe('Alice');
+    });
+
+    it('acknowledges callback query', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
+      await triggerCallbackQuery({
+        callbackQuery: {
+          id: 'cbq-456',
+          from: { id: 99001, first_name: 'Alice' },
+          message: { chat: { id: 100200300 }, message_id: 10 },
+          data: 'click',
+        },
+        answerCallbackQuery,
+      });
+
+      expect(answerCallbackQuery).toHaveBeenCalled();
+    });
+
+    it('ignores callback queries from unregistered chats', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
+      await triggerCallbackQuery({
+        callbackQuery: {
+          id: 'cbq-789',
+          from: { id: 99001, first_name: 'Alice' },
+          message: { chat: { id: 999999 }, message_id: 1 },
+          data: 'click',
+        },
+        answerCallbackQuery,
+      });
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(answerCallbackQuery).toHaveBeenCalled();
+    });
+
+    it('ignores callback queries without chat context', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
+      await triggerCallbackQuery({
+        callbackQuery: {
+          id: 'cbq-no-chat',
+          from: { id: 99001, first_name: 'Alice' },
+          message: undefined as any,
+          data: 'click',
+        },
+        answerCallbackQuery,
+      });
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(answerCallbackQuery).not.toHaveBeenCalled();
     });
   });
 

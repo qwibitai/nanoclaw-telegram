@@ -214,6 +214,44 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
     this.bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
 
+    // Handle inline keyboard button presses
+    this.bot.on('callback_query:data', async (ctx) => {
+      const query = ctx.callbackQuery;
+      const chatId = query.message?.chat?.id;
+      if (!chatId) return;
+
+      const chatJid = `tg:${chatId}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) {
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      const senderName =
+        query.from?.first_name || query.from?.username || 'Unknown';
+      const timestamp = new Date().toISOString();
+
+      this.opts.onMessage(chatJid, {
+        id: `callback-${query.id}`,
+        chat_jid: chatJid,
+        sender: query.from?.id?.toString() || '',
+        sender_name: senderName,
+        content: JSON.stringify({
+          _type: 'callback_query',
+          data: query.data,
+          query_id: query.id,
+          message_id: query.message?.message_id,
+          from_name: senderName,
+          text: `[button: ${query.data}] pressed by ${senderName}`,
+        }),
+        timestamp,
+        is_from_me: false,
+      });
+
+      // Acknowledge the callback to remove loading state
+      await ctx.answerCallbackQuery();
+    });
+
     // Handle errors gracefully
     this.bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
@@ -222,6 +260,7 @@ export class TelegramChannel implements Channel {
     // Start polling — returns a Promise that resolves when started
     return new Promise<void>((resolve) => {
       this.bot!.start({
+        allowed_updates: ['message', 'callback_query'],
         onStart: (botInfo) => {
           logger.info(
             { username: botInfo.username, id: botInfo.id },
