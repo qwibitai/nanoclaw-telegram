@@ -37,18 +37,25 @@ Default to local if the user has no preference.
 ```bash
 git remote add transcribe https://github.com/kky/nanoclaw-transcribe.git
 git fetch transcribe skill/transcribe
-git merge transcribe/skill/transcribe || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
+git merge transcribe/skill/transcribe
 ```
+
+If the merge has conflicts, resolve them carefully:
+
+- **package-lock.json**: Safe to use `git checkout --theirs package-lock.json` — `npm install` will regenerate it.
+- **package.json**: Do NOT use `--theirs` — this drops dependencies from other installed skills (e.g. `grammy` from Telegram). Instead, manually resolve: keep all `dependencies` from both sides, accept the incoming version/metadata fields.
+- **Other files** (e.g. `repo-tokens/badge.svg`, `.claude/skills/`): Safe to use `--theirs`.
+
+After resolving, `git add` the resolved files and `git merge --continue`.
 
 ### Validate
 
 ```bash
+npm install
 npm run build
 ```
+
+The `npm install` is important — it regenerates `package-lock.json` from the resolved `package.json` and ensures all dependencies from both sides are installed.
 
 ## Phase 3: Install Dependencies
 

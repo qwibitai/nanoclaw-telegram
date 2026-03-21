@@ -29,20 +29,17 @@ async function transcribeLocal(audioBuffer: Buffer): Promise<string | null> {
     fs.writeFileSync(tmpOgg, audioBuffer);
 
     // Convert ogg/opus to 16kHz mono WAV (required by whisper.cpp)
-    await execFileAsync('ffmpeg', [
-      '-i', tmpOgg,
-      '-ar', '16000',
-      '-ac', '1',
-      '-f', 'wav',
-      '-y', tmpWav,
-    ], { timeout: 30_000 });
+    await execFileAsync(
+      'ffmpeg',
+      ['-i', tmpOgg, '-ar', '16000', '-ac', '1', '-f', 'wav', '-y', tmpWav],
+      { timeout: 30_000 },
+    );
 
-    const { stdout } = await execFileAsync(WHISPER_BIN, [
-      '-m', WHISPER_MODEL,
-      '-f', tmpWav,
-      '--no-timestamps',
-      '-nt',
-    ], { timeout: 60_000 });
+    const { stdout } = await execFileAsync(
+      WHISPER_BIN,
+      ['-m', WHISPER_MODEL, '-f', tmpWav, '--no-timestamps', '-nt'],
+      { timeout: 60_000 },
+    );
 
     const transcript = stdout.trim();
     return transcript || null;
@@ -51,7 +48,11 @@ async function transcribeLocal(audioBuffer: Buffer): Promise<string | null> {
     return null;
   } finally {
     for (const f of [tmpOgg, tmpWav]) {
-      try { fs.unlinkSync(f); } catch { /* best effort cleanup */ }
+      try {
+        fs.unlinkSync(f);
+      } catch {
+        /* best effort cleanup */
+      }
     }
   }
 }
@@ -63,14 +64,14 @@ async function transcribeApi(audioBuffer: Buffer): Promise<string | null> {
 
     const preamble = Buffer.from(
       `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
-      `Content-Type: audio/ogg\r\n\r\n`,
+        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+        `Content-Type: audio/ogg\r\n\r\n`,
     );
     const modelPart = Buffer.from(
       `\r\n--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="model"\r\n\r\n` +
-      `whisper-1` +
-      `\r\n--${boundary}--\r\n`,
+        `Content-Disposition: form-data; name="model"\r\n\r\n` +
+        `whisper-1` +
+        `\r\n--${boundary}--\r\n`,
     );
     const body = Buffer.concat([preamble, audioBuffer, modelPart]);
 
@@ -84,7 +85,9 @@ async function transcribeApi(audioBuffer: Buffer): Promise<string | null> {
     });
 
     if (!res.ok) {
-      console.error(`OpenAI Whisper API error: ${res.status} ${res.statusText}`);
+      console.error(
+        `OpenAI Whisper API error: ${res.status} ${res.statusText}`,
+      );
       return null;
     }
 
@@ -103,7 +106,9 @@ async function transcribeApi(audioBuffer: Buffer): Promise<string | null> {
 export async function transcribe(audioBuffer: Buffer): Promise<string | null> {
   if (TRANSCRIPTION_BACKEND === 'api') {
     if (!OPENAI_API_KEY) {
-      console.error('OPENAI_API_KEY not set — cannot use API transcription backend');
+      console.error(
+        'OPENAI_API_KEY not set — cannot use API transcription backend',
+      );
       return null;
     }
     return transcribeApi(audioBuffer);
