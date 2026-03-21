@@ -596,7 +596,7 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('stores voice message with placeholder', async () => {
+    it('stores voice message with transcription-unavailable placeholder when transcription skill missing', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -606,8 +606,48 @@ describe('TelegramChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: '[Voice message]' }),
+        expect.objectContaining({
+          content: expect.stringContaining('[Voice message — transcription not available'),
+        }),
       );
+    });
+
+    it('transcribes voice message when transcription skill available', async () => {
+      const mockTranscribe = vi.fn().mockResolvedValue('Hello this is a voice message');
+      vi.doMock('../transcription.js', () => ({
+        transcribe: mockTranscribe,
+      }));
+
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const audioBuffer = Buffer.from('fake-audio-data');
+      const ctx = {
+        ...createMediaCtx({}),
+        getFile: vi.fn().mockResolvedValue({ file_path: 'voice/file_0.oga' }),
+      };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(audioBuffer.buffer),
+      }) as any;
+
+      try {
+        await triggerMediaMessage('message:voice', ctx);
+
+        expect(ctx.getFile).toHaveBeenCalled();
+        expect(mockTranscribe).toHaveBeenCalled();
+        expect(opts.onMessage).toHaveBeenCalledWith(
+          'tg:100200300',
+          expect.objectContaining({
+            content: expect.stringContaining('[Voice message. Transcription: "Hello this is a voice message"'),
+          }),
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+        vi.doUnmock('../transcription.js');
+      }
     });
 
     it('stores audio with placeholder', async () => {
