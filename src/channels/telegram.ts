@@ -214,30 +214,50 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const isGroup =
         ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
 
-      let content = '[Voice message — transcription not available. Run /add-transcription to enable voice transcription.]';
+      let content =
+        '[Voice message — transcription not available. Run /add-transcription to enable voice transcription.]';
       try {
+        // @ts-ignore — transcription module is optional (installed via /add-transcription)
         const { transcribe } = await import('../transcription.js');
         const file = await ctx.getFile();
         const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
         const res = await fetch(url);
         if (res.ok) {
           const buffer = Buffer.from(await res.arrayBuffer());
-          logger.info({ bytes: buffer.length }, 'Downloaded Telegram voice message');
+          logger.info(
+            { bytes: buffer.length },
+            'Downloaded Telegram voice message',
+          );
           const transcript = await transcribe(buffer);
           if (transcript) {
             content = `[Voice message. Transcription: "${transcript.trim()}". Begin your response with "You said: ${transcript.trim()}" then answer.]`;
-            logger.info({ chars: transcript.length }, 'Transcribed Telegram voice message');
+            logger.info(
+              { chars: transcript.length },
+              'Transcribed Telegram voice message',
+            );
           } else {
             content = '[Voice message — transcription failed]';
           }
         }
       } catch (err: any) {
-        if (err?.code === 'MODULE_NOT_FOUND' || err?.code === 'ERR_MODULE_NOT_FOUND') {
+        if (
+          err?.code === 'MODULE_NOT_FOUND' ||
+          err?.code === 'ERR_MODULE_NOT_FOUND'
+        ) {
           // Transcription skill not installed — fallback message already set
         } else {
-          logger.error({ err }, 'Failed to download/transcribe Telegram voice message');
+          logger.error(
+            { err },
+            'Failed to download/transcribe Telegram voice message',
+          );
         }
       }
 
