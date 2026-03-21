@@ -619,6 +619,7 @@ describe('TelegramChannel', () => {
       // It only runs when the transcription skill is installed (src/transcription.ts exists).
       let transcriptionAvailable = false;
       try {
+        // @ts-ignore — transcription module is optional (installed via /add-transcription)
         await import('../transcription.js');
         transcriptionAvailable = true;
       } catch {
