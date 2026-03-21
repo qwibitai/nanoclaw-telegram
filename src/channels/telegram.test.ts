@@ -99,6 +99,7 @@ function createTextCtx(overrides: {
   fromId?: number;
   firstName?: string;
   username?: string;
+  isBot?: boolean;
   messageId?: number;
   date?: number;
   entities?: any[];
@@ -113,6 +114,7 @@ function createTextCtx(overrides: {
     },
     from: {
       id: overrides.fromId ?? 99001,
+      is_bot: overrides.isBot ?? false,
       first_name: overrides.firstName ?? 'Alice',
       username: overrides.username ?? 'alice_user',
     },
@@ -132,6 +134,7 @@ function createMediaCtx(overrides: {
   chatType?: string;
   fromId?: number;
   firstName?: string;
+  isBot?: boolean;
   date?: number;
   messageId?: number;
   caption?: string;
@@ -146,6 +149,7 @@ function createMediaCtx(overrides: {
     },
     from: {
       id: overrides.fromId ?? 99001,
+      is_bot: overrides.isBot ?? false,
       first_name: overrides.firstName ?? 'Alice',
       username: 'alice_user',
     },
@@ -431,6 +435,65 @@ describe('TelegramChannel', () => {
           timestamp: '2024-01-01T00:00:00.000Z',
         }),
       );
+    });
+  });
+
+  // --- Self-message filtering ---
+
+  describe('self-message filtering', () => {
+    it('skips messages from the bot itself', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Bot ID is 12345 (from MockBot.start)
+      const ctx = createTextCtx({
+        text: 'Echo from bot',
+        fromId: 12345,
+        isBot: true,
+        firstName: 'Andy Bot',
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onChatMetadata).not.toHaveBeenCalled();
+    });
+
+    it('delivers messages from other bots', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createTextCtx({
+        text: 'Message from another bot',
+        fromId: 99999,
+        isBot: true,
+        firstName: 'Other Bot',
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: 'Message from another bot',
+          sender_name: 'Other Bot',
+        }),
+      );
+    });
+
+    it('skips non-text messages from the bot itself', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        fromId: 12345,
+        isBot: true,
+        firstName: 'Andy Bot',
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
     });
   });
 
