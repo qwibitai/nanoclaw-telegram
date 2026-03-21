@@ -69,7 +69,11 @@ vi.mock('grammy', () => ({
   },
 }));
 
-import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
+import {
+  TelegramChannel,
+  TelegramChannelOpts,
+  splitMessage,
+} from './telegram.js';
 
 // --- Test helpers ---
 
@@ -798,6 +802,57 @@ describe('TelegramChannel', () => {
       await channel.sendMessage('tg:100200300', 'No bot');
 
       // No error, no API call
+    });
+  });
+
+  // --- splitMessage ---
+
+  describe('splitMessage', () => {
+    it('returns single chunk for short text', () => {
+      const result = splitMessage('Hello world');
+      expect(result).toEqual(['Hello world']);
+    });
+
+    it('splits at paragraph boundary when possible', () => {
+      const para1 = 'a'.repeat(3000);
+      const para2 = 'b'.repeat(3000);
+      const text = `${para1}\n\n${para2}`;
+      const result = splitMessage(text);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toBe(para1);
+      expect(result[1]).toBe(para2);
+    });
+
+    it('splits at newline when no paragraph boundary', () => {
+      const line1 = 'a'.repeat(3000);
+      const line2 = 'b'.repeat(2000);
+      const text = `${line1}\n${line2}`;
+      const result = splitMessage(text);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toBe(line1);
+      expect(result[1]).toBe(line2);
+    });
+
+    it('splits at space when no newline', () => {
+      const word1 = 'a'.repeat(3000);
+      const word2 = 'b'.repeat(2000);
+      const text = `${word1} ${word2}`;
+      const result = splitMessage(text);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toBe(word1);
+      expect(result[1]).toBe(word2);
+    });
+
+    it('hard splits when no natural boundary', () => {
+      const text = 'x'.repeat(5000);
+      const result = splitMessage(text);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toBe('x'.repeat(4096));
+      expect(result[1]).toBe('x'.repeat(904));
     });
   });
 
