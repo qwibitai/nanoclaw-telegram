@@ -47,6 +47,7 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private threadIds = new Map<string, number>();
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -91,6 +92,10 @@ export class TelegramChannel implements Channel {
       }
 
       const chatJid = `tg:${ctx.chat.id}`;
+      // Track forum topic thread ID for replies
+      if (ctx.message.message_thread_id) {
+        this.threadIds.set(chatJid, ctx.message.message_thread_id);
+      }
       let content = ctx.message.text;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
@@ -168,6 +173,10 @@ export class TelegramChannel implements Channel {
     // Handle non-text messages with placeholders so the agent knows something was sent
     const storeNonText = (ctx: any, placeholder: string) => {
       const chatJid = `tg:${ctx.chat.id}`;
+      // Track forum topic thread ID for replies
+      if (ctx.message?.message_thread_id) {
+        this.threadIds.set(chatJid, ctx.message.message_thread_id);
+      }
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -246,16 +255,21 @@ export class TelegramChannel implements Channel {
     try {
       const numericId = jid.replace(/^tg:/, '');
 
+      // Include forum thread ID if one was tracked for this chat
+      const threadId = this.threadIds.get(jid);
+      const options = threadId ? { message_thread_id: threadId } : {};
+
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
       if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text);
+        await sendTelegramMessage(this.bot.api, numericId, text, options);
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
           await sendTelegramMessage(
             this.bot.api,
             numericId,
             text.slice(i, i + MAX_LENGTH),
+            options,
           );
         }
       }
@@ -285,7 +299,9 @@ export class TelegramChannel implements Channel {
     if (!this.bot || !isTyping) return;
     try {
       const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.sendChatAction(numericId, 'typing');
+      const threadId = this.threadIds.get(jid);
+      const options = threadId ? { message_thread_id: threadId } : {};
+      await this.bot.api.sendChatAction(numericId, 'typing', options);
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
     }

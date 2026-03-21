@@ -102,6 +102,7 @@ function createTextCtx(overrides: {
   messageId?: number;
   date?: number;
   entities?: any[];
+  messageThreadId?: number;
 }) {
   const chatId = overrides.chatId ?? 100200300;
   const chatType = overrides.chatType ?? 'group';
@@ -121,6 +122,7 @@ function createTextCtx(overrides: {
       date: overrides.date ?? Math.floor(Date.now() / 1000),
       message_id: overrides.messageId ?? 1,
       entities: overrides.entities ?? [],
+      message_thread_id: overrides.messageThreadId,
     },
     me: { username: 'andy_ai_bot' },
     reply: vi.fn(),
@@ -136,6 +138,7 @@ function createMediaCtx(overrides: {
   messageId?: number;
   caption?: string;
   extra?: Record<string, any>;
+  messageThreadId?: number;
 }) {
   const chatId = overrides.chatId ?? 100200300;
   return {
@@ -153,6 +156,7 @@ function createMediaCtx(overrides: {
       date: overrides.date ?? Math.floor(Date.now() / 1000),
       message_id: overrides.messageId ?? 1,
       caption: overrides.caption,
+      message_thread_id: overrides.messageThreadId,
       ...(overrides.extra || {}),
     },
     me: { username: 'andy_ai_bot' },
@@ -801,6 +805,90 @@ describe('TelegramChannel', () => {
     });
   });
 
+  // --- Forum/Topics support ---
+
+  describe('forum topics', () => {
+    it('tracks message_thread_id from incoming messages', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Send a message with a thread ID (forum topic)
+      const ctx = createTextCtx({
+        text: 'Hello from a topic',
+        messageThreadId: 42,
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({ content: 'Hello from a topic' }),
+      );
+    });
+
+    it('sends reply to correct thread', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // First, receive a message from a forum topic to track the thread
+      const ctx = createTextCtx({
+        text: 'Message in topic',
+        messageThreadId: 42,
+      });
+      await triggerTextMessage(ctx);
+
+      // Now send a reply — should include message_thread_id
+      await channel.sendMessage('tg:100200300', 'Reply');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'Reply',
+        { message_thread_id: 42, parse_mode: 'Markdown' },
+      );
+    });
+
+    it('sends typing indicator to correct thread', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Track a thread ID
+      const ctx = createTextCtx({
+        text: 'Topic message',
+        messageThreadId: 42,
+      });
+      await triggerTextMessage(ctx);
+
+      await channel.setTyping('tg:100200300', true);
+
+      expect(currentBot().api.sendChatAction).toHaveBeenCalledWith(
+        '100200300',
+        'typing',
+        { message_thread_id: 42 },
+      );
+    });
+
+    it('works without thread_id (non-forum groups)', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      // Send a message without thread ID
+      const ctx = createTextCtx({ text: 'Regular group message' });
+      await triggerTextMessage(ctx);
+
+      await channel.sendMessage('tg:100200300', 'Reply');
+
+      // Should not include message_thread_id
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'Reply',
+        { parse_mode: 'Markdown' },
+      );
+    });
+  });
+
   // --- ownsJid ---
 
   describe('ownsJid', () => {
@@ -843,6 +931,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendChatAction).toHaveBeenCalledWith(
         '100200300',
         'typing',
+        {},
       );
     });
 
