@@ -61,7 +61,7 @@ vi.mock('grammy', () => ({
       this.errorHandler = handler;
     }
 
-    start(opts: { onStart: (botInfo: any) => void }) {
+    start(opts: { onStart: (botInfo: any) => void; allowed_updates?: string[] }) {
       opts.onStart({ username: 'andy_ai_bot', id: 12345 });
     }
 
@@ -173,6 +173,19 @@ async function triggerMediaMessage(
   ctx: ReturnType<typeof createMediaCtx>,
 ) {
   const handlers = currentBot().filterHandlers.get(filter) || [];
+  for (const h of handlers) await h(ctx);
+}
+
+async function triggerReaction(ctx: {
+  messageReaction: {
+    chat: { id: number };
+    message_id: number;
+    date: number;
+    user?: { id: number; first_name?: string; username?: string };
+    new_reaction: Array<{ type: string; emoji?: string; custom_emoji_id?: string }>;
+  };
+}) {
+  const handlers = currentBot().filterHandlers.get('message_reaction') || [];
   for (const h of handlers) await h(ctx);
 }
 
@@ -798,6 +811,98 @@ describe('TelegramChannel', () => {
       await channel.sendMessage('tg:100200300', 'No bot');
 
       // No error, no API call
+    });
+  });
+
+  // --- Message reactions ---
+
+  describe('message reactions', () => {
+    it('delivers emoji reactions as messages', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await triggerReaction({
+        messageReaction: {
+          chat: { id: 100200300 },
+          message_id: 42,
+          date: 1704067200,
+          user: { id: 99001, first_name: 'Alice', username: 'alice_user' },
+          new_reaction: [{ type: 'emoji', emoji: '👍' }],
+        },
+      });
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          chat_jid: 'tg:100200300',
+          sender: '99001',
+          sender_name: 'Alice',
+          is_from_me: false,
+        }),
+      );
+
+      const msg = (opts.onMessage as any).mock.calls[0][1];
+      const parsed = JSON.parse(msg.content);
+      expect(parsed._type).toBe('message_reaction');
+      expect(parsed.emoji).toBe('👍');
+      expect(parsed.message_id).toBe(42);
+    });
+
+    it('ignores reactions from unregistered chats', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await triggerReaction({
+        messageReaction: {
+          chat: { id: 999999 },
+          message_id: 1,
+          date: 1704067200,
+          user: { id: 99001, first_name: 'Alice' },
+          new_reaction: [{ type: 'emoji', emoji: '👍' }],
+        },
+      });
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+
+    it('ignores reaction removals (empty new_reaction)', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await triggerReaction({
+        messageReaction: {
+          chat: { id: 100200300 },
+          message_id: 1,
+          date: 1704067200,
+          user: { id: 99001, first_name: 'Alice' },
+          new_reaction: [],
+        },
+      });
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+
+    it('ignores custom emoji reactions', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await triggerReaction({
+        messageReaction: {
+          chat: { id: 100200300 },
+          message_id: 1,
+          date: 1704067200,
+          user: { id: 99001, first_name: 'Alice' },
+          new_reaction: [
+            { type: 'custom_emoji', custom_emoji_id: '12345' },
+          ],
+        },
+      });
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
     });
   });
 
