@@ -32,21 +32,10 @@ Default to local if the user has no preference.
 
 ## Phase 2: Apply Code Changes
 
-### Ensure remote
-
-```bash
-git remote -v
-```
-
-If `transcribe` is missing, add it:
-
-```bash
-git remote add transcribe https://github.com/kky/nanoclaw-transcribe.git
-```
-
 ### Merge the skill branch
 
 ```bash
+git remote add transcribe https://github.com/kky/nanoclaw-transcribe.git
 git fetch transcribe skill/transcribe
 git merge transcribe/skill/transcribe || {
   git checkout --theirs package-lock.json
