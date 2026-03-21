@@ -214,6 +214,45 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
     this.bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
 
+    // Handle emoji reactions on messages
+    this.bot.on('message_reaction', async (ctx) => {
+      const update = ctx.messageReaction;
+      if (!update) return;
+
+      const chatJid = `tg:${update.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const newReactions = update.new_reaction || [];
+      if (newReactions.length === 0) return; // Reaction removed, ignore
+
+      const emoji = newReactions
+        .filter((r: any) => r.type === 'emoji')
+        .map((r: any) => r.emoji)
+        .join('');
+      if (!emoji) return; // Custom emoji only, skip
+
+      const senderName =
+        update.user?.first_name || update.user?.username || 'Unknown';
+      const timestamp = new Date(update.date * 1000).toISOString();
+
+      this.opts.onMessage(chatJid, {
+        id: `reaction-${update.message_id}-${Date.now()}`,
+        chat_jid: chatJid,
+        sender: update.user?.id?.toString() || '',
+        sender_name: senderName,
+        content: JSON.stringify({
+          _type: 'message_reaction',
+          emoji,
+          message_id: update.message_id,
+          from_name: senderName,
+          text: `[reaction: ${emoji}] on message #${update.message_id}`,
+        }),
+        timestamp,
+        is_from_me: false,
+      });
+    });
+
     // Handle errors gracefully
     this.bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
@@ -222,6 +261,7 @@ export class TelegramChannel implements Channel {
     // Start polling — returns a Promise that resolves when started
     return new Promise<void>((resolve) => {
       this.bot!.start({
+        allowed_updates: ['message', 'message_reaction'],
         onStart: (botInfo) => {
           logger.info(
             { username: botInfo.username, id: botInfo.id },
