@@ -47,6 +47,7 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private stopping = false;
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -219,7 +220,7 @@ export class TelegramChannel implements Channel {
       logger.error({ err: err.message }, 'Telegram bot error');
     });
 
-    // Start polling — returns a Promise that resolves when started
+    // Start polling — returns a Promise that resolves when onStart fires
     return new Promise<void>((resolve) => {
       this.bot!.start({
         onStart: (botInfo) => {
@@ -233,8 +234,37 @@ export class TelegramChannel implements Channel {
           );
           resolve();
         },
-      });
+      }).catch((err) => this.handlePollingFailure(err));
     });
+  }
+
+  /**
+   * Restart polling with exponential backoff when transient errors (e.g. 409
+   * Conflict during restarts) kill the grammY polling loop.  401 (invalid
+   * token) is treated as fatal and not retried.
+   */
+  private handlePollingFailure(err: any, attempt = 1): void {
+    if (this.stopping || !this.bot) return;
+
+    const code = err?.error_code;
+    if (code === 401) {
+      logger.error({ err }, 'Telegram bot auth failed, not retrying');
+      return;
+    }
+
+    const maxDelay = 60_000;
+    const delay = Math.min(3_000 * 2 ** (attempt - 1), maxDelay);
+    logger.warn(
+      { attempt, delay, err: err?.message || String(err) },
+      `Telegram polling failed, restarting in ${delay}ms`,
+    );
+
+    setTimeout(() => {
+      if (this.stopping || !this.bot) return;
+      this.bot.start().catch((retryErr) =>
+        this.handlePollingFailure(retryErr, Math.min(attempt + 1, 10)),
+      );
+    }, delay);
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -274,8 +304,9 @@ export class TelegramChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    this.stopping = true;
     if (this.bot) {
-      this.bot.stop();
+      await this.bot.stop();
       this.bot = null;
       logger.info('Telegram bot stopped');
     }

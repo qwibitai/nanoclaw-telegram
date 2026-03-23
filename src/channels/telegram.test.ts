@@ -61,11 +61,20 @@ vi.mock('grammy', () => ({
       this.errorHandler = handler;
     }
 
-    start(opts: { onStart: (botInfo: any) => void }) {
-      opts.onStart({ username: 'andy_ai_bot', id: 12345 });
+    _startReject: ((err: any) => void) | null = null;
+
+    start(opts?: { onStart?: (botInfo: any) => void }) {
+      if (opts?.onStart) {
+        opts.onStart({ username: 'andy_ai_bot', id: 12345 });
+      }
+      return new Promise<void>((_resolve, reject) => {
+        this._startReject = reject;
+      });
     }
 
-    stop() {}
+    stop() {
+      return Promise.resolve();
+    }
   },
 }));
 
@@ -944,6 +953,67 @@ describe('TelegramChannel', () => {
     it('has name "telegram"', () => {
       const channel = new TelegramChannel('test-token', createTestOpts());
       expect(channel.name).toBe('telegram');
+    });
+  });
+
+  // --- Polling auto-reconnect ---
+
+  describe('polling auto-reconnect', () => {
+    it('restarts polling after a 409 Conflict error', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const bot = currentBot();
+      const startSpy = vi.spyOn(bot, 'start');
+
+      // Simulate grammY rejecting with 409 Conflict
+      bot._startReject!({ error_code: 409, message: 'Conflict' });
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      // bot.start() should have been called again (reconnect attempt)
+      expect(startSpy).toHaveBeenCalledTimes(1);
+
+      vi.useRealTimers();
+    });
+
+    it('does not retry on 401 Unauthorized', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const bot = currentBot();
+      const startSpy = vi.spyOn(bot, 'start');
+
+      // Simulate 401
+      bot._startReject!({ error_code: 401, message: 'Unauthorized' });
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Should NOT retry
+      expect(startSpy).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
+    });
+
+    it('does not retry after disconnect', async () => {
+      vi.useFakeTimers();
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const bot = currentBot();
+      const startSpy = vi.spyOn(bot, 'start');
+
+      await channel.disconnect();
+      bot._startReject!({ error_code: 409, message: 'Conflict' });
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Should NOT retry — we're shutting down
+      expect(startSpy).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
     });
   });
 });
