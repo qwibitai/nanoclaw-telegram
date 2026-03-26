@@ -102,6 +102,20 @@ export class TelegramChannel implements Channel {
       const msgId = ctx.message.message_id.toString();
       const threadId = ctx.message.message_thread_id;
 
+      // Include reply-to context so the agent knows what the user is responding to
+      const replyMsg = ctx.message.reply_to_message;
+      if (replyMsg) {
+        const replyAuthor =
+          replyMsg.from?.first_name ||
+          replyMsg.from?.username ||
+          replyMsg.from?.id?.toString() ||
+          'Unknown';
+        const replyText = replyMsg.text || replyMsg.caption || '';
+        content = replyText
+          ? `[Reply to ${replyAuthor}: ${replyText}]\n${content}`
+          : `[Reply to ${replyAuthor}]\n${content}`;
+      }
+
       // Determine chat name
       const chatName =
         ctx.chat.type === 'private'
@@ -181,6 +195,21 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
 
+      let content = `${placeholder}${caption}`;
+      const replyMsg = ctx.message.reply_to_message;
+      if (replyMsg) {
+        const replyAuthor =
+          replyMsg.from?.first_name ||
+          replyMsg.from?.username ||
+          replyMsg.from?.id?.toString() ||
+          'Unknown';
+        const replyText = replyMsg.text || replyMsg.caption || '';
+        const replyPrefix = replyText
+          ? `[Reply to ${replyAuthor}: ${replyText}]`
+          : `[Reply to ${replyAuthor}]`;
+        content = `${replyPrefix}\n${content}`;
+      }
+
       const isGroup =
         ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
       this.opts.onChatMetadata(
@@ -195,7 +224,7 @@ export class TelegramChannel implements Channel {
         chat_jid: chatJid,
         sender: ctx.from?.id?.toString() || '',
         sender_name: senderName,
-        content: `${placeholder}${caption}`,
+        content,
         timestamp,
         is_from_me: false,
       });
