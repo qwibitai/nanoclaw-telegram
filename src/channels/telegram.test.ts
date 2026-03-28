@@ -1093,6 +1093,10 @@ describe('TelegramChannel', () => {
         expect.stringContaining('Thread ID: `42`'),
         expect.objectContaining({ parse_mode: 'Markdown' }),
       );
+      expect(ctx.reply).toHaveBeenCalledWith(
+        expect.stringContaining('Forum JID: `tg:100200300:42`'),
+        expect.objectContaining({ parse_mode: 'Markdown' }),
+      );
     });
 
     it('/chatid omits thread ID outside forum topics', async () => {
