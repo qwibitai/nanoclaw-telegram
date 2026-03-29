@@ -68,9 +68,11 @@ export class TelegramChannel implements Channel {
         chatType === 'private'
           ? ctx.from?.first_name || 'Private'
           : (ctx.chat as any).title || 'Unknown';
+      const threadId = ctx.message?.message_thread_id;
+      const threadInfo = threadId ? `\nThread ID: \`${threadId}\`` : '';
 
       ctx.reply(
-        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
+        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}${threadInfo}`,
         { parse_mode: 'Markdown' },
       );
     });
@@ -90,7 +92,10 @@ export class TelegramChannel implements Channel {
         if (TELEGRAM_BOT_COMMANDS.has(cmd)) return;
       }
 
-      const chatJid = `tg:${ctx.chat.id}`;
+      const threadId = ctx.message.message_thread_id;
+      const chatJid = threadId
+        ? `tg:${ctx.chat.id}:${threadId}`
+        : `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
@@ -169,7 +174,10 @@ export class TelegramChannel implements Channel {
 
     // Handle non-text messages with placeholders so the agent knows something was sent
     const storeNonText = (ctx: any, placeholder: string) => {
-      const chatJid = `tg:${ctx.chat.id}`;
+      const threadId = ctx.message.message_thread_id;
+      const chatJid = threadId
+        ? `tg:${ctx.chat.id}:${threadId}`
+        : `tg:${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
 
@@ -239,33 +247,27 @@ export class TelegramChannel implements Channel {
     });
   }
 
-  async sendMessage(
-    jid: string,
-    text: string,
-    threadId?: string,
-  ): Promise<void> {
+  async sendMessage(jid: string, text: string): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
       return;
     }
 
     try {
-      const numericId = jid.replace(/^tg:/, '');
-      const options = threadId
-        ? { message_thread_id: parseInt(threadId, 10) }
-        : {};
+      const [numericId, threadId] = jid.replace(/^tg:/, '').split(':');
+      const opts = threadId ? { message_thread_id: Number(threadId) } : {};
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
       if (text.length <= MAX_LENGTH) {
-        await sendTelegramMessage(this.bot.api, numericId, text, options);
+        await sendTelegramMessage(this.bot.api, numericId, text, opts);
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
           await sendTelegramMessage(
             this.bot.api,
             numericId,
             text.slice(i, i + MAX_LENGTH),
-            options,
+            opts,
           );
         }
       }
@@ -297,8 +299,9 @@ export class TelegramChannel implements Channel {
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
     if (!this.bot || !isTyping) return;
     try {
-      const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.sendChatAction(numericId, 'typing');
+      const [numericId, threadId] = jid.replace(/^tg:/, '').split(':');
+      const opts = threadId ? { message_thread_id: Number(threadId) } : {};
+      await this.bot.api.sendChatAction(numericId, 'typing', opts);
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
     }
