@@ -69,7 +69,9 @@ export class TelegramChannel implements Channel {
           ? ctx.from?.first_name || 'Private'
           : (ctx.chat as any).title || 'Unknown';
       const threadId = ctx.message?.message_thread_id;
-      const threadInfo = threadId ? `\nThread ID: \`${threadId}\`` : '';
+      const threadInfo = threadId
+        ? `\nThread ID: \`${threadId}\`\nForum JID: \`tg:${chatId}:${threadId}\``
+        : '';
 
       ctx.reply(
         `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}${threadInfo}`,
@@ -105,7 +107,6 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const sender = ctx.from?.id.toString() || '';
       const msgId = ctx.message.message_id.toString();
-      const threadId = ctx.message.message_thread_id;
 
       // Determine chat name
       const chatName =
