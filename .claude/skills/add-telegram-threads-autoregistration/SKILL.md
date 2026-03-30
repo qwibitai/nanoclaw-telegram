@@ -13,7 +13,7 @@ This skill makes NanoClaw automatically register each Telegram forum thread as i
 
 - When a message arrives in a thread of a registered supergroup, the host checks whether a group for `tg:<chatId>:<threadId>` exists
 - If not, it auto-registers it using the cached forum topic name (if available) or `Thread <id>` as the group name
-- The thread group folder is `tg<chatId>-<threadId>` (numeric only, collision-free)
+- The thread group folder is `<parentFolder>_<threadSlug>` (e.g. `telegram_mygroup_support`) — readable and derived from the parent group's folder and the topic name
 - From that point on, messages in the thread are routed to its own isolated group context
 
 ## Implementation
@@ -62,10 +62,14 @@ private autoRegisterThread(
 ): void {
   if (!this.opts.registerGroup) return;
   const jid = `tg:${chatId}:${threadId}`;
-  const safeId = String(chatId).replace(/[^0-9]/g, '');
-  const folder = `tg${safeId}-${threadId}`;
   const name =
     this.topicNames.get(`${chatId}:${threadId}`) || `Thread ${threadId}`;
+  const threadSlug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || `thread_${threadId}`;
+  const folder = `${parentGroup.folder}_${threadSlug}`.slice(0, 64);
   this.opts.registerGroup(jid, {
     name,
     folder,
@@ -124,7 +128,7 @@ Tell the user:
 ## Architecture Notes
 
 - Auto-registration happens on first message — threads that are never messaged are never registered
-- The thread folder is derived deterministically from the chat and thread IDs, so it is stable across restarts
+- The thread folder is derived from the parent group's folder and the topic name slug, so it is human-readable (e.g. `telegram_mygroup_support`) and stable as long as the topic name doesn't change
 - If the forum topic name is not cached yet (e.g. the bot restarted after the topic was created), the group name falls back to `Thread <id>` and can be renamed manually
 - The parent group's trigger, `requiresTrigger`, and `containerConfig` are all inherited
 
