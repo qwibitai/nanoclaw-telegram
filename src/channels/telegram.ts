@@ -47,6 +47,7 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private botUserId: number | null = null;
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -85,6 +86,9 @@ export class TelegramChannel implements Channel {
     const TELEGRAM_BOT_COMMANDS = new Set(['chatid', 'ping']);
 
     this.bot.on('message:text', async (ctx) => {
+      // Skip messages from the bot itself to prevent loops
+      if (ctx.from?.is_bot && ctx.from?.id === this.botUserId) return;
+
       if (ctx.message.text.startsWith('/')) {
         const cmd = ctx.message.text.slice(1).split(/[\s@]/)[0].toLowerCase();
         if (TELEGRAM_BOT_COMMANDS.has(cmd)) return;
@@ -169,6 +173,9 @@ export class TelegramChannel implements Channel {
 
     // Handle non-text messages with placeholders so the agent knows something was sent
     const storeNonText = (ctx: any, placeholder: string) => {
+      // Skip messages from the bot itself to prevent loops
+      if (ctx.from?.is_bot && ctx.from?.id === this.botUserId) return;
+
       const chatJid = `tg:${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) return;
@@ -225,6 +232,7 @@ export class TelegramChannel implements Channel {
     return new Promise<void>((resolve) => {
       this.bot!.start({
         onStart: (botInfo) => {
+          this.botUserId = botInfo.id;
           logger.info(
             { username: botInfo.username, id: botInfo.id },
             'Telegram bot connected',
