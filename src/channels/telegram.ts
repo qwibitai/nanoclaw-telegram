@@ -1,7 +1,9 @@
+import fs from 'fs';
 import https from 'https';
+import path from 'path';
 import { Api, Bot } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, GROUPS_DIR, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -11,6 +13,29 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+
+/** Download a URL to a local file path using the built-in https module. */
+function downloadFile(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https
+      .get(url, (res) => {
+        if (res.statusCode !== 200) {
+          file.close();
+          fs.unlink(dest, () => {});
+          reject(new Error(`HTTP ${res.statusCode} downloading ${url}`));
+          return;
+        }
+        res.pipe(file);
+        file.on('finish', () => file.close(() => resolve()));
+      })
+      .on('error', (err) => {
+        file.close();
+        fs.unlink(dest, () => {});
+        reject(err);
+      });
+  });
+}
 
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
@@ -205,9 +230,54 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
-    this.bot.on('message:document', (ctx) => {
-      const name = ctx.message.document?.file_name || 'file';
-      storeNonText(ctx, `[Document: ${name}]`);
+    this.bot.on('message:document', async (ctx) => {
+      const doc = ctx.message.document;
+      const name = doc?.file_name || 'file';
+      const ext = name.split('.').pop()?.toLowerCase() ?? '';
+
+      // Supported readable document types — download these for the agent
+      const READABLE_TYPES = new Set([
+        'docx', 'doc', 'odt', 'rtf',   // Word-compatible
+        'xlsx', 'xls', 'ods', 'csv',    // Spreadsheet
+        'pptx', 'ppt', 'odp',           // Presentation
+        'txt', 'md',                     // Plain text
+      ]);
+
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+
+      if (!group || !doc || !READABLE_TYPES.has(ext)) {
+        storeNonText(ctx, `[Document: ${name}]`);
+        return;
+      }
+
+      // Telegram bot API limits getFile to files ≤ 20 MB
+      const MAX_BYTES = 20 * 1024 * 1024;
+      if (doc.file_size && doc.file_size > MAX_BYTES) {
+        storeNonText(ctx, `[Document: ${name} — too large to download (> 20 MB)]`);
+        return;
+      }
+
+      try {
+        const fileInfo = await ctx.api.getFile(doc.file_id);
+        const filePath = fileInfo.file_path;
+        if (!filePath) throw new Error('Empty file_path from Telegram');
+
+        const url = `https://api.telegram.org/file/bot${this.botToken}/${filePath}`;
+        const attachmentsDir = path.join(GROUPS_DIR, group.folder, 'attachments');
+        fs.mkdirSync(attachmentsDir, { recursive: true });
+        const destPath = path.join(attachmentsDir, name);
+
+        await downloadFile(url, destPath);
+
+        // Report the container-visible path so the agent can read the file
+        const containerPath = `/workspace/group/attachments/${name}`;
+        storeNonText(ctx, `[Document: ${name} → ${containerPath}]`);
+        logger.info({ chatJid, name, destPath }, 'Telegram document downloaded');
+      } catch (err) {
+        logger.error({ chatJid, name, err }, 'Failed to download Telegram document');
+        storeNonText(ctx, `[Document: ${name} — download failed]`);
+      }
     });
     this.bot.on('message:sticker', (ctx) => {
       const emoji = ctx.message.sticker?.emoji || '';
