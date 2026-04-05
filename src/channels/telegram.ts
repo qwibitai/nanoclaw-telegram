@@ -8,6 +8,11 @@ import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
+import {
+  createWhisperProvider,
+  transcribeAudio,
+  type TranscriptionProvider,
+} from '../transcription.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -51,10 +56,16 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private transcriptionProvider: TranscriptionProvider | null;
 
-  constructor(botToken: string, opts: TelegramChannelOpts) {
+  constructor(
+    botToken: string,
+    opts: TelegramChannelOpts,
+    transcriptionProvider: TranscriptionProvider | null = null,
+  ) {
     this.botToken = botToken;
     this.opts = opts;
+    this.transcriptionProvider = transcriptionProvider;
   }
 
   /**
@@ -308,8 +319,29 @@ export class TelegramChannel implements Channel {
         filename: `video_${ctx.message.message_id}`,
       });
     });
-    this.bot.on('message:voice', (ctx) => {
-      storeMedia(ctx, '[Voice message]', {
+    this.bot.on('message:voice', async (ctx) => {
+      let placeholder = '[Voice message]';
+      if (this.transcriptionProvider) {
+        try {
+          const file = await ctx.getFile();
+          if (file.file_path) {
+            const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+            const res = await fetch(url);
+            if (res.ok) {
+              const buffer = Buffer.from(await res.arrayBuffer());
+              const text = await transcribeAudio(
+                this.transcriptionProvider,
+                buffer,
+                'audio/ogg',
+              );
+              if (text) placeholder = `[Voice: ${text}]`;
+            }
+          }
+        } catch (err) {
+          logger.debug({ err }, 'Voice download/transcription failed');
+        }
+      }
+      storeMedia(ctx, placeholder, {
         fileId: ctx.message.voice?.file_id,
         filename: `voice_${ctx.message.message_id}`,
       });
@@ -426,12 +458,15 @@ export class TelegramChannel implements Channel {
 }
 
 registerChannel('telegram', (opts: ChannelOpts) => {
-  const envVars = readEnvFile(['TELEGRAM_BOT_TOKEN']);
+  const envVars = readEnvFile(['TELEGRAM_BOT_TOKEN', 'OPENAI_API_KEY']);
   const token =
     process.env.TELEGRAM_BOT_TOKEN || envVars.TELEGRAM_BOT_TOKEN || '';
   if (!token) {
     logger.warn('Telegram: TELEGRAM_BOT_TOKEN not set');
     return null;
   }
-  return new TelegramChannel(token, opts);
+  const transcriber = envVars.OPENAI_API_KEY
+    ? createWhisperProvider(envVars.OPENAI_API_KEY)
+    : null;
+  return new TelegramChannel(token, opts, transcriber);
 });
