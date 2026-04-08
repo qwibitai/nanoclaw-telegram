@@ -967,14 +967,68 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.sendMessage.mockRejectedValueOnce(
+      currentBot().api.sendMessage.mockRejectedValue(
         new Error('Network error'),
       );
 
-      // Should not throw
+      // Should not throw — sendMessage catches errors internally
       await expect(
         channel.sendMessage('tg:100200300', 'Will fail'),
       ).resolves.toBeUndefined();
+    });
+
+    it('retries on 502/503/504 errors', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce({ error_code: 502 })
+        .mockResolvedValueOnce(undefined);
+
+      await channel.sendMessage('tg:100200300', 'Retry me');
+
+      // First call fails (502), second call succeeds
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries on 429 rate limit with backoff', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce({
+          error_code: 429,
+          parameters: { retry_after: 1 },
+        })
+        .mockResolvedValueOnce(undefined);
+
+      await channel.sendMessage('tg:100200300', 'Rate limited');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to plain text on 400 without retrying', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      currentBot()
+        .api.sendMessage.mockRejectedValueOnce({ error_code: 400 })
+        .mockResolvedValueOnce(undefined);
+
+      await channel.sendMessage('tg:100200300', 'Bad *markdown');
+
+      // First call fails (400 Markdown), second call succeeds (plain text fallback)
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+      // Second call should NOT have parse_mode
+      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        '100200300',
+        'Bad *markdown',
+        {},
+      );
     });
 
     it('does nothing when bot is not initialized', async () => {

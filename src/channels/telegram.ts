@@ -33,15 +33,54 @@ async function sendTelegramMessage(
   text: string,
   options: { message_thread_id?: number } = {},
 ): Promise<void> {
-  try {
-    await api.sendMessage(chatId, text, {
-      ...options,
-      parse_mode: 'Markdown',
-    });
-  } catch (err) {
-    // Fallback: send as plain text if Markdown parsing fails
-    logger.debug({ err }, 'Markdown send failed, falling back to plain text');
-    await api.sendMessage(chatId, text, options);
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      try {
+        await api.sendMessage(chatId, text, {
+          ...options,
+          parse_mode: 'Markdown',
+        });
+        return;
+      } catch (err) {
+        // Fallback: send as plain text if Markdown parsing fails (400 = bad formatting)
+        const status = (err as any)?.error_code ?? (err as any)?.status;
+        if (status === 400) {
+          logger.debug(
+            { err },
+            'Markdown send failed, falling back to plain text',
+          );
+          await api.sendMessage(chatId, text, options);
+          return;
+        }
+        throw err;
+      }
+    } catch (err) {
+      const status = (err as any)?.error_code ?? (err as any)?.status;
+      const isRetryable =
+        status === 429 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504 ||
+        (err as any)?.code === 'ETIMEDOUT' ||
+        (err as any)?.code === 'ECONNRESET';
+
+      if (!isRetryable || attempt === MAX_RETRIES) {
+        throw err;
+      }
+
+      // Back off: 429 uses Retry-After header, others use exponential delay
+      const retryAfter =
+        status === 429
+          ? ((err as any)?.parameters?.retry_after ?? 5) * 1000
+          : 2000 * attempt;
+      logger.warn(
+        { chatId, status, attempt, retryAfter },
+        'Telegram send failed, retrying',
+      );
+      await new Promise((r) => setTimeout(r, retryAfter));
+    }
   }
 }
 
