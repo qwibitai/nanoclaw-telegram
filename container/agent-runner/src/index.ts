@@ -33,7 +33,22 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
 }
+
+type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+interface ImageContentBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: ImageMediaType; data: string };
+}
+
+interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+
+type ContentBlock = ImageContentBlock | TextContentBlock;
 
 interface ContainerOutput {
   status: 'success' | 'error';
@@ -55,7 +70,7 @@ interface SessionsIndex {
 
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | ContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -77,6 +92,16 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  pushMultimodal(content: ContentBlock[]): void {
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -385,6 +410,43 @@ async function runQuery(
 }> {
   const stream = new MessageStream();
   stream.push(prompt);
+
+  // If the prompt referenced any images via [Image: attachments/...] markers,
+  // load the bytes from /workspace/group/<relativePath>, base64-encode, and
+  // push as a multimodal user message so Claude sees them as actual image
+  // content blocks (not just OCR'd text or file paths).
+  if (containerInput.imageAttachments?.length) {
+    const validMediaTypes: ImageMediaType[] = [
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+    ];
+    const blocks: ContentBlock[] = [];
+    for (const img of containerInput.imageAttachments) {
+      const imgPath = path.join('/workspace/group', img.relativePath);
+      const mediaType = validMediaTypes.includes(
+        img.mediaType as ImageMediaType,
+      )
+        ? (img.mediaType as ImageMediaType)
+        : 'image/jpeg';
+      try {
+        const data = fs.readFileSync(imgPath).toString('base64');
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data },
+        });
+      } catch (err) {
+        log(
+          `Failed to load image ${imgPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (blocks.length > 0) {
+      log(`Pushing ${blocks.length} image(s) as multimodal content blocks`);
+      stream.pushMultimodal(blocks);
+    }
+  }
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;

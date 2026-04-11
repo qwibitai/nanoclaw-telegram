@@ -1,22 +1,64 @@
 ---
 name: add-image-vision
-description: Add image vision to NanoClaw agents. Resizes and processes WhatsApp image attachments, then sends them to Claude as multimodal content blocks.
+description: Add image vision to NanoClaw agents. Images arriving via supported channels are downloaded, resized with sharp, and sent to Claude as multimodal content blocks so the agent sees them directly instead of just a file path.
 ---
 
 # Image Vision Skill
 
-Adds the ability for NanoClaw agents to see and understand images sent via WhatsApp. Images are downloaded, resized with sharp, saved to the group workspace, and passed to the agent as base64-encoded multimodal content blocks.
+Adds the ability for NanoClaw agents to see and understand images sent via supported channels. Images are downloaded, resized with sharp (<=1024px, JPEG q85), saved to the group workspace, and passed to the agent as base64-encoded multimodal content blocks.
+
+**Supported channels:**
+- **Telegram** — native support via `nanoclaw-telegram` (merge `telegram/skill/image-vision`)
+- **WhatsApp** — native support via `nanoclaw-whatsapp` (merge `whatsapp/skill/image-vision`)
+
+Both channels share the same channel-agnostic `src/image.ts` module and the same multimodal handling in the agent-runner. Adding image-vision to a new channel means writing ~30 lines in that channel's photo/image handler to call `processImageFile()` and emit the `[Image: attachments/...]` marker — the core pipeline is channel-independent.
 
 ## Phase 1: Pre-flight
 
 1. Check if `src/image.ts` exists — skip to Phase 3 if already applied
 2. Confirm `sharp` is installable (native bindings require build tools)
+3. Identify which channel you're adding vision to — Telegram or WhatsApp — and use the matching skill branch below
 
-**Prerequisite:** WhatsApp must be installed first (`skill/whatsapp` merged). This skill modifies WhatsApp channel files.
+**Prerequisite:** The matching channel must be installed first. Image-vision modifies channel-specific files (e.g. `src/channels/telegram.ts` or `src/channels/whatsapp.ts`).
 
 ## Phase 2: Apply Code Changes
 
-### Ensure WhatsApp fork remote
+### For Telegram
+
+Ensure the telegram remote is present:
+
+```bash
+git remote -v
+```
+
+If `telegram` is missing, add it:
+
+```bash
+git remote add telegram https://github.com/qwibitai/nanoclaw-telegram.git
+```
+
+Merge the skill branch:
+
+```bash
+git fetch telegram skill/image-vision
+git merge telegram/skill/image-vision || {
+  git checkout --theirs package-lock.json
+  git add package-lock.json
+  git merge --continue
+}
+```
+
+This merges in:
+- `src/image.ts` (channel-agnostic: download, resize via sharp, base64 encoding, `parseImageReferences()`)
+- Image attachment handling in `src/channels/telegram.ts` (new photo handler that calls `processImageFile()`)
+- Updated `src/channels/telegram.test.ts` (mocks image.js, asserts new marker)
+- Image passing to agent in `src/index.ts` (parseImageReferences call) and `src/container-runner.ts` (ContainerInput.imageAttachments)
+- Image content block support in `container/agent-runner/src/index.ts` (types, MessageStream.pushMultimodal, runQuery loader)
+- `sharp` npm dependency in `package.json`
+
+### For WhatsApp
+
+Ensure the whatsapp remote is present:
 
 ```bash
 git remote -v
@@ -28,7 +70,7 @@ If `whatsapp` is missing, add it:
 git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git
 ```
 
-### Merge the skill branch
+Merge the skill branch:
 
 ```bash
 git fetch whatsapp skill/image-vision
@@ -39,15 +81,11 @@ git merge whatsapp/skill/image-vision || {
 }
 ```
 
-This merges in:
-- `src/image.ts` (image download, resize via sharp, base64 encoding)
-- `src/image.test.ts` (8 unit tests)
-- Image attachment handling in `src/channels/whatsapp.ts`
-- Image passing to agent in `src/index.ts` and `src/container-runner.ts`
-- Image content block support in `container/agent-runner/src/index.ts`
-- `sharp` npm dependency in `package.json`
+This merges in the whatsapp-specific channel handler and the same underlying `src/image.ts` pipeline. If you have both telegram and whatsapp installed, both photo handlers use the same `src/image.ts` module — so merging both skill branches is fine and the shared files resolve cleanly (or produce trivial conflicts you take from whichever side matches your working tree).
 
-If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
+### In either case
+
+If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides. The sharp dependency and the core multimodal infrastructure are identical between the two skill branches; only the channel-specific photo handler file differs.
 
 ### Validate code changes
 

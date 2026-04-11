@@ -29,6 +29,7 @@ import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
+import { parseImageReferences } from './image.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -381,6 +382,11 @@ async function runAgent(
       }
     : undefined;
 
+  // Extract any image references (markers like [Image: attachments/...])
+  // from the formatted prompt so the agent-runner can load the bytes and
+  // push them as multimodal content blocks alongside the text prompt.
+  const imageAttachments = parseImageReferences([{ content: prompt }]);
+
   try {
     const output = await runContainerAgent(
       group,
@@ -391,6 +397,8 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        imageAttachments:
+          imageAttachments.length > 0 ? imageAttachments : undefined,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),

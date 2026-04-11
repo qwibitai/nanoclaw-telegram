@@ -29,6 +29,17 @@ vi.mock('../group-folder.js', () => ({
   resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/test-groups/${folder}`),
 }));
 
+// Mock image processing — sharp can't run on dummy buffers in unit tests.
+// processImageFile returns a deterministic stub so the photo handler's
+// success path can be asserted without invoking real image processing.
+vi.mock('../image.js', () => ({
+  processImageFile: vi.fn(async () => ({
+    marker: '[Image: attachments/img-test.jpg]',
+    relativePath: 'attachments/img-test.jpg',
+  })),
+  parseImageReferences: vi.fn(() => []),
+}));
+
 
 // --- Grammy mock ---
 
@@ -684,10 +695,13 @@ describe('TelegramChannel', () => {
       await flushPromises();
 
       expect(currentBot().api.getFile).toHaveBeenCalledWith('large_id');
+      // The photo handler now resizes via processImageFile (mocked) and
+      // emits a [Image: ...] marker that the agent-runner translates into
+      // a multimodal content block rather than the old file path marker.
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[Photo] (/workspace/group/attachments/photo_1.jpg)',
+          content: '[Image: attachments/img-test.jpg]',
         }),
       );
     });
@@ -706,8 +720,11 @@ describe('TelegramChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
+        // Mocked processImageFile returns a fixed marker; the real
+        // implementation builds caption into the marker internally, so
+        // the channel layer never re-appends the caption.
         expect.objectContaining({
-          content: '[Photo] (/workspace/group/attachments/photo_1.jpg) Look at this',
+          content: '[Image: attachments/img-test.jpg]',
         }),
       );
     });
