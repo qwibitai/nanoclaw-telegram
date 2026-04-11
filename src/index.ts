@@ -72,6 +72,11 @@ let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
+// Tracks the thread_id of the most recent inbound message per chat.
+// Used to route the agent's reply into the thread the user most recently wrote in.
+// Updated in processGroupMessages (initial batch) and startMessageLoop (piped messages),
+// read from the streaming callback at send time.
+const lastInboundThreadId: Record<string, string | undefined> = {};
 let messageLoopRunning = false;
 
 const channels: Channel[] = [];
@@ -252,6 +257,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
 
+  // Track the thread_id of the most recent inbound message so the streaming
+  // callback (below) and the piping path in startMessageLoop can route the
+  // reply into the thread the user last wrote in. Channels without threads
+  // (WhatsApp) ignore this.
+  lastInboundThreadId[chatJid] =
+    missedMessages[missedMessages.length - 1].thread_id || undefined;
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -293,7 +305,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        // Read latest inbound thread at send time so replies follow the
+        // user even when new messages are piped mid-stream.
+        await channel.sendMessage(chatJid, text, lastInboundThreadId[chatJid]);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -520,6 +534,10 @@ async function startMessageLoop(): Promise<void> {
             );
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
+            // Update reply-thread tracker so the running agent's next output
+            // is routed into the thread of the most recently piped message.
+            lastInboundThreadId[chatJid] =
+              messagesToSend[messagesToSend.length - 1].thread_id || undefined;
             saveState();
             // Show typing indicator while the container processes the piped message
             channel
