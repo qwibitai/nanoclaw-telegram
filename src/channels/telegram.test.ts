@@ -986,6 +986,57 @@ describe('TelegramChannel', () => {
 
       // No error, no API call
     });
+
+    it('passes thread_id to Telegram API when provided', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendMessage('tg:100200300', 'Threaded reply', '42');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'Threaded reply',
+        { message_thread_id: 42, parse_mode: 'Markdown' },
+      );
+    });
+
+    it('omits thread_id when not provided', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await channel.sendMessage('tg:100200300', 'Untethered reply');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
+        '100200300',
+        'Untethered reply',
+        { parse_mode: 'Markdown' },
+      );
+    });
+
+    it('propagates thread_id across split messages exceeding 4096 chars', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const longText = 'x'.repeat(5000);
+      await channel.sendMessage('tg:100200300', longText, '7');
+
+      expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(2);
+      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
+        1,
+        '100200300',
+        'x'.repeat(4096),
+        { message_thread_id: 7, parse_mode: 'Markdown' },
+      );
+      expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
+        2,
+        '100200300',
+        'x'.repeat(904),
+        { message_thread_id: 7, parse_mode: 'Markdown' },
+      );
+    });
   });
 
   // --- ownsJid ---
