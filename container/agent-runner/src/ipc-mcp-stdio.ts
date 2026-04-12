@@ -68,6 +68,58 @@ server.tool(
 );
 
 server.tool(
+  'react_to_message',
+  `Send an emoji reaction to a specific message in the chat. A lightweight status signal or command-acknowledgment without sending a full text reply.
+
+CHANNEL SUPPORT: currently implemented for Telegram. On channels without reaction support the IPC is silently dropped at the host layer — check channel capabilities before relying on this tool for critical feedback.
+
+TELEGRAM WHITELIST: the Telegram Bot API only accepts reactions from a fixed whitelist of ~74 emoji. If the emoji is not in the whitelist, the reaction silently fails at the API layer and is logged at warn level on the host (\`REACTION_INVALID\`). Fall back to a short text reply if the reaction did not land.
+
+Suggested status signals (agent → user, reacting to an incoming user message):
+• 👀  seen, starting to process
+• ⚡  working on a long task (browser, research, ingest)
+• 👏  done successfully
+• 🤔  need clarification from the user
+• 🫡  scheduled / queued for later
+• ✍  ingested into the wiki
+• 🙏  repeating / retrying
+• 💔  failed, could not complete
+• 🙊  acknowledged silently, no text reply needed
+
+When the user reacts to one of the agent's own messages, the update is delivered back as a synthetic incoming message in the form: "[Reaction: X] on message Y". Those should be interpreted as shortcut commands — the exact meaning is user-specific and should live in the group's CLAUDE.md or an associated skill doc.`,
+  {
+    message_id: z
+      .string()
+      .describe(
+        'The message ID to react to. For incoming user messages use the id field. For your own previous messages, note the id at send time.',
+      ),
+    emoji: z
+      .string()
+      .describe(
+        'The emoji character to react with. Use one from the whitelist documented above — other emoji will silently fail on the API.',
+      ),
+  },
+  async (args) => {
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'react',
+      chatJid,
+      messageId: args.message_id,
+      emoji: args.emoji,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Reaction ${args.emoji} queued for message ${args.message_id}.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

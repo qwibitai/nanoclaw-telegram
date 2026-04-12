@@ -95,6 +95,10 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: send an emoji reaction to a specific message. Channels that
+  // have a reactions API (Telegram) implement this; others leave it
+  // undefined and the host layer drops react_to_message IPCs with a warn.
+  reactToMessage?(jid: string, messageId: string, emoji: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
