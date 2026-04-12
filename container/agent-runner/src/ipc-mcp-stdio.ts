@@ -68,6 +68,141 @@ server.tool(
 );
 
 server.tool(
+  'react_to_message',
+  `Send an emoji reaction to a specific message in the chat. Use as a lightweight status signal or acknowledgment without sending a full text reply.
+
+CHANNEL SUPPORT: currently implemented for Telegram. On channels without reaction support the IPC is silently dropped at the host layer — check channel capabilities before relying on this tool for critical feedback.
+
+TELEGRAM WHITELIST: the Telegram Bot API only accepts reactions from a fixed emoji whitelist (~74 standard reactions). If the emoji is not in the whitelist, the reaction silently fails on the API side and is logged at warn level on the host.
+
+Status signals (when reacting to the user's message — agent → user):
+• 👀 — seen, starting to process
+• ⚡ — working on a long task (browser, research, big ingest)
+• 👏 — done successfully
+• 🤔 — need clarification from the user
+• 🫡 — scheduled / queued for later
+• ✍ — ingested into the wiki
+• 🙏 — repeating / retrying
+• 💔 — failed, could not complete
+• 🙊 — acknowledged silently, no text reply needed
+
+Commands (when the user reacts to the agent's message — these arrive as "[Reaction: X] on message Y" synthetic messages and should be interpreted as shortcut commands):
+• 👍 confirm last pending action    • 👎 reject / cancel
+• ❤ remember / ingest to wiki        • 🤩 repeat last action
+• 🔥 important / pin                  • 👌 mark Todoist task done
+• 🤬 stop / delete                    • 🤔 explain in more detail
+• 🫡 follow-up reminder               • 😴 quiet, no text reply
+
+See the telegram-reactions skill (in the group's skills directory) for full semantics and examples.`,
+  {
+    message_id: z
+      .string()
+      .describe(
+        'The message ID to react to. For incoming user messages, use the id field from the message. For your own previous messages, note the id at send time.',
+      ),
+    emoji: z
+      .string()
+      .describe(
+        'The emoji character to react with. Use one from the whitelist above — other emoji will silently fail.',
+      ),
+  },
+  async (args) => {
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'react',
+      chatJid,
+      messageId: args.message_id,
+      emoji: args.emoji,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Reaction ${args.emoji} queued for message ${args.message_id}.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'send_message_with_buttons',
+  `Send a message with inline keyboard buttons. Buttons appear below the message text as tappable elements.
+
+WHEN TO USE: whenever you present choices to the user — drafts (create/cancel), yes/no confirmations,
+multi-option decisions (wiki/chat/skip), recommendations (do/defer/ignore).
+
+NATIVE COLORS (Bot API 9.4, February 2026) — use \`style\` field:
+• style: "success" — GREEN button (confirm / create / yes / send / ingest)
+• style: "danger"  — RED button   (cancel / delete / no / remove)
+• style: "primary" — BLUE button  (main action, neutral primary choice)
+• no style         — GREY button  (secondary / skip / details / later)
+
+EMOJI PREFIX — always add an emoji too, it works on older clients and reinforces meaning:
+• ✅ success  • ❌ danger  • ✍️ wiki  • 💬 chat  • ⏭ skip  • 🗑 delete  • ℹ️ info
+
+BUTTON LIMITS: max 4 buttons per row, max 4 rows. More = cluttered.
+MAX 1 "success" and 1 "danger" per row — don't stack same color.
+
+CALLBACK DATA: ≤ 64 bytes. Use format \`<action>:<payload>\` when needed (e.g. "task:create", "lint:6").
+Button taps arrive as synthetic messages: \`[Callback: <data>] on message <id>\`
+Treat them like confirmed actions — no need to ask again.`,
+  {
+    text: z.string().describe('Message text (Markdown supported: *bold*, _italic_, `code`)'),
+    buttons: z
+      .array(
+        z.array(
+          z.object({
+            text: z
+              .string()
+              .describe('Button label. Always include emoji prefix (✅ ❌ ✍️ etc.) AND set style for color.'),
+            data: z
+              .string()
+              .max(64)
+              .optional()
+              .describe('Callback data (≤ 64 bytes). Use format "action:payload".'),
+            url: z
+              .string()
+              .url()
+              .optional()
+              .describe('URL to open (alternative to callback data).'),
+            style: z
+              .enum(['success', 'danger', 'primary'])
+              .optional()
+              .describe('Bot API 9.4 native color: success=green, danger=red, primary=blue. Omit for default grey.'),
+          }),
+        ),
+      )
+      .describe('2D array of buttons: outer = rows, inner = buttons in each row. Max 4×4.'),
+    sender: z
+      .string()
+      .optional()
+      .describe('Your role/identity name (e.g. "Mila"). When set, messages appear from a dedicated bot in Telegram.'),
+  },
+  async (args) => {
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'message_with_buttons',
+      chatJid,
+      text: args.text,
+      buttons: args.buttons,
+      sender: args.sender || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Message with buttons sent.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

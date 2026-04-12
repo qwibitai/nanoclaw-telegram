@@ -717,6 +717,39 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
     },
+    reactToMessage: async (jid, messageId, emoji) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn(
+          { jid, messageId, emoji },
+          'reactToMessage: no channel owns JID',
+        );
+        return;
+      }
+      if (!channel.reactToMessage) {
+        logger.warn(
+          { jid, channel: channel.name, messageId, emoji },
+          'reactToMessage: channel does not support reactions, dropping',
+        );
+        return;
+      }
+      await channel.reactToMessage(jid, messageId, emoji);
+    },
+    sendMessageWithButtons: async (jid, text, buttons) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn({ jid }, 'sendMessageWithButtons: no channel owns JID');
+        return;
+      }
+      if (!channel.sendMessageWithButtons) {
+        logger.warn(
+          { jid, channel: channel.name },
+          'sendMessageWithButtons: channel does not support inline buttons, dropping',
+        );
+        return;
+      }
+      await channel.sendMessageWithButtons(jid, text, buttons);
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

@@ -23,6 +23,29 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  // Optional: send an emoji reaction to a message. Only populated when at
+  // least one connected channel implements the Channel.reactToMessage hook
+  // (e.g. Telegram). If missing, `type: 'react'` IPC files are silently
+  // dropped with a warn log — the agent still thinks it succeeded at the
+  // MCP boundary but no reaction ever reaches the chat.
+  reactToMessage?: (
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ) => Promise<void>;
+  // Optional: send a message with inline keyboard buttons. Only populated
+  // when the connected channel implements Channel.sendMessageWithButtons.
+  sendMessageWithButtons?: (
+    jid: string,
+    text: string,
+    buttons: Array<Array<{
+      text: string;
+      data?: string;
+      url?: string;
+      style?: 'success' | 'danger' | 'primary'; // Bot API 9.4
+      icon_custom_emoji_id?: string;             // Bot API 9.4
+    }>>,
+  ) => Promise<void>;
 }
 
 let ipcWatcherRunning = false;
@@ -90,6 +113,79 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'react' &&
+                data.chatJid &&
+                data.messageId &&
+                data.emoji
+              ) {
+                // Authorization: same rules as IPC message — only the
+                // owning group (or the main group) can emit reactions
+                // into this chat.
+                const targetGroup = registeredGroups[data.chatJid];
+                const authorized =
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup);
+                if (!authorized) {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC reaction attempt blocked',
+                  );
+                } else if (!deps.reactToMessage) {
+                  logger.warn(
+                    {
+                      chatJid: data.chatJid,
+                      sourceGroup,
+                      emoji: data.emoji,
+                    },
+                    'IPC reaction dropped — no channel supports reactToMessage',
+                  );
+                } else {
+                  await deps.reactToMessage(
+                    data.chatJid,
+                    data.messageId,
+                    data.emoji,
+                  );
+                  logger.info(
+                    {
+                      chatJid: data.chatJid,
+                      sourceGroup,
+                      messageId: data.messageId,
+                      emoji: data.emoji,
+                    },
+                    'IPC reaction sent',
+                  );
+                }
+              } else if (
+                data.type === 'message_with_buttons' &&
+                data.chatJid &&
+                data.text &&
+                Array.isArray(data.buttons)
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                const authorized =
+                  isMain || (targetGroup && targetGroup.folder === sourceGroup);
+                if (!authorized) {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC message_with_buttons attempt blocked',
+                  );
+                } else if (!deps.sendMessageWithButtons) {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'IPC message_with_buttons dropped — channel does not support inline buttons',
+                  );
+                } else {
+                  await deps.sendMessageWithButtons(
+                    data.chatJid,
+                    data.text,
+                    data.buttons,
+                  );
+                  logger.info(
+                    { chatJid: data.chatJid, sourceGroup, rows: data.buttons.length },
+                    'IPC message with buttons sent',
                   );
                 }
               }

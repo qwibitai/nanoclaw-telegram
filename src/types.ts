@@ -82,6 +82,36 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+/**
+ * A single button in an inline keyboard row.
+ * Either `data` (callback) or `url` must be set.
+ *
+ * Bot API 9.4 (February 2026): `style` sets native button color in Telegram UI.
+ * Always include an emoji prefix in `text` as well — it works on older clients.
+ */
+export interface InlineButton {
+  /** Displayed label — always include an emoji prefix for visual meaning */
+  text: string;
+  /** Callback data (≤ 64 bytes). Delivered as `[Callback: <data>] on message <id>`. */
+  data?: string;
+  /** URL to open when button is tapped (alternative to callback). */
+  url?: string;
+  /**
+   * Bot API 9.4 — native button color in Telegram.
+   * "success" = green (confirm/yes/create)
+   * "danger"  = red   (cancel/delete/no)
+   * "primary" = blue  (main action, neutral primary choice)
+   * Omit for default grey (secondary/skip/info buttons).
+   */
+  style?: 'success' | 'danger' | 'primary';
+  /**
+   * Bot API 9.4 — custom emoji icon shown before button text.
+   * Use the emoji's custom_emoji_id from Telegram sticker set.
+   * Optional enhancement; not required.
+   */
+  icon_custom_emoji_id?: string;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {
@@ -95,6 +125,19 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: send an emoji reaction to a specific message. Used by the
+  // `react_to_message` MCP tool so the agent can signal status or command
+  // acknowledgments without a full text reply. See the telegram-reactions
+  // skill doc in the relevant group for usage semantics.
+  reactToMessage?(jid: string, messageId: string, emoji: string): Promise<void>;
+  // Optional: send a message with an inline keyboard. Callback presses are
+  // delivered as synthetic `[Callback: <data>] on message <id>` messages.
+  // See the inline-buttons skill doc for usage semantics and emoji color guide.
+  sendMessageWithButtons?(
+    jid: string,
+    text: string,
+    buttons: InlineButton[][],
+  ): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
