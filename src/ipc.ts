@@ -23,6 +23,15 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  // Optional: send an emoji reaction to a message. Populated by the host
+  // only if at least one connected channel implements the
+  // `Channel.reactToMessage` hook. If undefined, IPC files with
+  // `type: 'react'` are silently dropped with a warn log.
+  reactToMessage?: (
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ) => Promise<void>;
 }
 
 let ipcWatcherRunning = false;
@@ -90,6 +99,48 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'react' &&
+                data.chatJid &&
+                data.messageId &&
+                data.emoji
+              ) {
+                // Same authorization as IPC messages — only the owning
+                // group (or main group) can push reactions into this chat.
+                const targetGroup = registeredGroups[data.chatJid];
+                const authorized =
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup);
+                if (!authorized) {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC reaction attempt blocked',
+                  );
+                } else if (!deps.reactToMessage) {
+                  logger.warn(
+                    {
+                      chatJid: data.chatJid,
+                      sourceGroup,
+                      emoji: data.emoji,
+                    },
+                    'IPC reaction dropped — no channel supports reactToMessage',
+                  );
+                } else {
+                  await deps.reactToMessage(
+                    data.chatJid,
+                    data.messageId,
+                    data.emoji,
+                  );
+                  logger.info(
+                    {
+                      chatJid: data.chatJid,
+                      sourceGroup,
+                      messageId: data.messageId,
+                      emoji: data.emoji,
+                    },
+                    'IPC reaction sent',
                   );
                 }
               }
