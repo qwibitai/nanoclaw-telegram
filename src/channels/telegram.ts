@@ -2,7 +2,7 @@ import fs from 'fs';
 import https from 'https';
 import path from 'path';
 
-import { Api, Bot } from 'grammy';
+import { Api, Bot, InputFile } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -357,6 +357,39 @@ export class TelegramChannel implements Channel {
         },
       });
     });
+  }
+
+  async sendFile(
+    jid: string,
+    filePath: string,
+    caption?: string,
+  ): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized (sendFile)');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const ext = path.extname(filePath).toLowerCase();
+      const isPhoto = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext);
+
+      if (isPhoto) {
+        await this.bot.api.sendPhoto(
+          numericId,
+          new InputFile(filePath),
+          caption ? { caption, parse_mode: 'Markdown' } : undefined,
+        );
+      } else {
+        await this.bot.api.sendDocument(
+          numericId,
+          new InputFile(filePath),
+          caption ? { caption, parse_mode: 'Markdown' } : undefined,
+        );
+      }
+      logger.info({ jid, filePath, isPhoto }, 'Telegram file sent');
+    } catch (err) {
+      logger.error({ jid, filePath, err }, 'Failed to send Telegram file');
+    }
   }
 
   async sendMessage(
